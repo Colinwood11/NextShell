@@ -21,8 +21,13 @@ import {
   toReplayChunks,
   type SessionOutputBuffer
 } from "../utils/sessionOutputBuffer";
+import {
+  retainSessionsInCollections,
+  setBoundedSessionMapEntry
+} from "../utils/sessionScopedCollections";
 import { formatErrorMessage } from "../utils/errorMessage";
 import { usePreferencesStore } from "../store/usePreferencesStore";
+import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
 import {
   buildTerminalAuthIntro,
   buildTerminalAuthRetryNotice,
@@ -38,6 +43,7 @@ interface TerminalPaneProps {
   connection?: ConnectionProfile;
   session?: SessionDescriptor;
   sessionIds: string[];
+  onReconnectSession: (sessionId: string) => Promise<void> | void;
   onRetrySessionAuth: (
     sessionId: string,
     authOverride: SessionAuthOverrideInput
@@ -61,6 +67,7 @@ const DEFAULT_TERMINAL_OPTIONS: FrozenTerminalOptions = {
   backspaceMode: "ascii-backspace",
   deleteMode: "vt220-delete"
 };
+const MAX_BUFFERED_SESSION_COUNT = 32;
 
 const sequenceByBackspaceMode = (
   mode: ConnectionProfile["backspaceMode"]
@@ -97,6 +104,19 @@ const runSessionAction = (action: Promise<unknown>): void => {
   action.catch(swallowSessionActionError);
 };
 
+const ackSessionDelivery = (
+  sessionId: string,
+  deliveryId: number,
+  byteLength: number
+): void => {
+  runSessionAction(window.nextshell.session.ackData({
+    streamKind: "session",
+    streamId: sessionId,
+    deliveryId,
+    consumedBytes: byteLength
+  }));
+};
+
 const statusMessage = (
   status: SessionDescriptor["status"],
   reason?: string
@@ -112,7 +132,7 @@ const statusMessage = (
   }
 
   if (status === "disconnected") {
-    return "SSH 会话已断开。";
+    return "SSH 会话已断开。按回车键尝试重连。";
   }
 
   if (status === "failed") {
@@ -150,6 +170,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   connection,
   session,
   sessionIds,
+  onReconnectSession,
   onRetrySessionAuth,
   onRequestSearchMode
 }, ref) => {
@@ -167,16 +188,23 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   const frozenSessionIdRef = useRef<string | undefined>(undefined);
   const terminalOptionsRef = useRef<FrozenTerminalOptions>(DEFAULT_TERMINAL_OPTIONS);
   const onRequestSearchModeRef = useRef<TerminalPaneProps["onRequestSearchMode"]>(onRequestSearchMode);
+  const onReconnectSessionRef = useRef<TerminalPaneProps["onReconnectSession"]>(onReconnectSession);
   const onRetrySessionAuthRef = useRef<TerminalPaneProps["onRetrySessionAuth"]>(onRetrySessionAuth);
   const findNextRef = useRef<() => void>(() => {});
   const findPreviousRef = useRef<() => void>(() => {});
   const authStateBySessionRef = useRef<Map<string, TerminalAuthState>>(new Map());
+  const sessionStatusBySessionRef = useRef<Map<string, SessionDescriptor["status"]>>(new Map());
+  const reconnectPendingSessionIdsRef = useRef<Set<string>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     onRequestSearchModeRef.current = onRequestSearchMode;
   }, [onRequestSearchMode]);
+
+  useEffect(() => {
+    onReconnectSessionRef.current = onReconnectSession;
+  }, [onReconnectSession]);
 
   useEffect(() => {
     onRetrySessionAuthRef.current = onRetrySessionAuth;
@@ -188,7 +216,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
 
     const existing = bufferBySessionRef.current.get(targetSessionId) ?? createEmptyBuffer();
     const next = appendWithLimit(existing, text, MAX_SESSION_OUTPUT_BYTES);
-    bufferBySessionRef.current.set(targetSessionId, next);
+    setBoundedSessionMapEntry(
+      bufferBySessionRef.current,
+      targetSessionId,
+      next,
+      MAX_BUFFERED_SESSION_COUNT,
+      sessionIdRef.current ? [sessionIdRef.current] : []
+    );
   }, []);
 
   const writeLocalOutput = useCallback(
@@ -280,6 +314,25 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     [connection?.authType, writeLocalOutput]
   );
 
+  const tryReconnectOnEnter = useCallback((targetSessionId: string, data: string): boolean => {
+    const status = sessionStatusBySessionRef.current.get(targetSessionId);
+    if (!shouldReconnectOnInput(status, data)) {
+      return false;
+    }
+
+    if (reconnectPendingSessionIdsRef.current.has(targetSessionId)) {
+      return true;
+    }
+
+    reconnectPendingSessionIdsRef.current.add(targetSessionId);
+    Promise.resolve(onReconnectSessionRef.current(targetSessionId))
+      .catch(swallowSessionActionError)
+      .finally(() => {
+        reconnectPendingSessionIdsRef.current.delete(targetSessionId);
+      });
+    return true;
+  }, []);
+
   const replaySessionOutput = useCallback((targetSessionId: string) => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -292,6 +345,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     if (!buffer) {
       return;
     }
+
+    setBoundedSessionMapEntry(
+      bufferBySessionRef.current,
+      targetSessionId,
+      buffer,
+      MAX_BUFFERED_SESSION_COUNT,
+      [targetSessionId]
+    );
 
     const replay = toReplayChunks(buffer).join("");
     if (replay) {
@@ -416,7 +477,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     }
     terminal.reset();
     if (sessionId) {
-      bufferBySessionRef.current.set(sessionId, createEmptyBuffer());
+      setBoundedSessionMapEntry(
+        bufferBySessionRef.current,
+        sessionId,
+        createEmptyBuffer(),
+        MAX_BUFFERED_SESSION_COUNT,
+        [sessionId]
+      );
     }
     setCtxMenu(null);
   }, []);
@@ -445,23 +512,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     const knownSessionIds = new Set(sessionIds);
     knownSessionIdsRef.current = knownSessionIds;
 
-    for (const sessionId of Array.from(bufferBySessionRef.current.keys())) {
-      if (!knownSessionIds.has(sessionId)) {
-        bufferBySessionRef.current.delete(sessionId);
-      }
-    }
-
-    for (const sessionId of Array.from(lastStatusKeyBySessionRef.current.keys())) {
-      if (!knownSessionIds.has(sessionId)) {
-        lastStatusKeyBySessionRef.current.delete(sessionId);
-      }
-    }
-
-    for (const sessionId of Array.from(authStateBySessionRef.current.keys())) {
-      if (!knownSessionIds.has(sessionId)) {
-        authStateBySessionRef.current.delete(sessionId);
-      }
-    }
+    retainSessionsInCollections(knownSessionIds, [
+      bufferBySessionRef.current,
+      lastStatusKeyBySessionRef.current,
+      authStateBySessionRef.current,
+      sessionStatusBySessionRef.current,
+      reconnectPendingSessionIdsRef.current
+    ]);
   }, [sessionIds]);
 
   useEffect(() => {
@@ -612,6 +669,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
+      if (tryReconnectOnEnter(sessionId, data)) {
+        return;
+      }
+
       runSessionAction(window.nextshell.session.write({
         sessionId,
         data
@@ -665,7 +726,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       fitRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [handleLocalAuthInput]);
+  }, [handleLocalAuthInput, tryReconnectOnEnter]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -706,13 +767,20 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   useEffect(() => {
     const offData = window.nextshell.session.onData((event) => {
       if (!knownSessionIdsRef.current.has(event.sessionId)) {
+        ackSessionDelivery(event.sessionId, event.deliveryId, event.byteLength);
         return;
       }
 
       appendSessionOutput(event.sessionId, event.data);
-      if (event.sessionId === sessionIdRef.current) {
-        terminalRef.current?.write(event.data);
+      const terminal = terminalRef.current;
+      if (event.sessionId === sessionIdRef.current && terminal) {
+        terminal.write(event.data, () => {
+          ackSessionDelivery(event.sessionId, event.deliveryId, event.byteLength);
+        });
+        return;
       }
+
+      ackSessionDelivery(event.sessionId, event.deliveryId, event.byteLength);
     });
 
     const offStatus = window.nextshell.session.onStatus((event) => {
@@ -720,6 +788,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
+      sessionStatusBySessionRef.current.set(event.sessionId, event.status);
       if (event.status === "connected" || event.status === "disconnected") {
         authStateBySessionRef.current.delete(event.sessionId);
       }
@@ -764,6 +833,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     const previousSessionId = sessionIdRef.current;
     const currentSessionId = session?.id;
     sessionIdRef.current = currentSessionId;
+    if (currentSessionId && session?.status) {
+      sessionStatusBySessionRef.current.set(currentSessionId, session.status);
+    }
 
     if (previousSessionId !== currentSessionId) {
       if (!currentSessionId) {

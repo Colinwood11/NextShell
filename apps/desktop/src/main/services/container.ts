@@ -9,7 +9,6 @@ import { BrowserWindow, dialog, shell } from "electron";
 import type { OpenDialogOptions, WebContents } from "electron";
 import type {
   AppPreferences,
-  AppPreferencesPatch,
   AuditLogRecord,
   BackupArchiveMeta,
   BackupConflictPolicy,
@@ -27,6 +26,7 @@ import type {
   DeleteMode,
   ExportedConnection,
   MigrationRecord,
+  MonitorSnapshot,
   NetworkConnection,
   NetworkSnapshot,
   ProcessDetailSnapshot,
@@ -40,10 +40,6 @@ import type {
   SystemInfoSnapshot,
   SshKeyProfile,
   TerminalEncoding
-} from "../../../../../packages/core/src/index";
-import {
-  normalizeBatchMaxConcurrency,
-  normalizeBatchRetryCount
 } from "../../../../../packages/core/src/index";
 import {
   SshConnection,
@@ -72,7 +68,6 @@ import type {
   SavedCommandRemoveInput,
   SavedCommandUpsertInput,
   SettingsUpdateInput,
-  SessionDataEvent,
   SessionStatusEvent,
   TemplateParamsListInput,
   TemplateParamsClearInput,
@@ -88,12 +83,20 @@ import {
   AUTH_REQUIRED_PREFIX,
   CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX
 } from "../../../../../packages/shared/src/index";
-import type { UpdateCheckResult, PingResult, TracerouteEvent } from "../../../../../packages/shared/src/index";
+import type {
+  PingResult,
+  SessionDataEvent,
+  StreamDeliveryAckInput,
+  StreamDeliveryEnvelope,
+  TracerouteEvent,
+  UpdateCheckResult
+} from "../../../../../packages/shared/src/index";
 import {
   EncryptedSecretVault,
   KeytarPasswordCache,
   generateDeviceKey,
   createMasterKeyMeta,
+  clearDerivedKeyCache,
   verifyMasterPassword
 } from "../../../../../packages/security/src/index";
 import {
@@ -105,7 +108,10 @@ import {
   CachedProxyRepository
 } from "../../../../../packages/storage/src/index";
 import { RemoteEditManager } from "./remote-edit-manager";
+import { mergePreferences } from "./preferences";
 import { BackupService, applyPendingRestore } from "./backup-service";
+import { changeMasterPassword } from "./master-password-change";
+import { resolveAuditRuntime } from "./audit-runtime";
 import {
   isFinalShellFormat,
   isNextShellFormat,
@@ -155,6 +161,10 @@ import {
   type NetworkProbeExecutionLog,
   type NetworkTool,
 } from "./monitor/network-monitor-controller";
+import {
+  createLatestOnlyDispatcher,
+  createOrderedBytesDispatcher
+} from "./ipc-stream-dispatcher";
 
 interface ActiveSession {
   descriptor: SessionDescriptor;
@@ -248,6 +258,7 @@ export interface ServiceContainer {
     sessionId?: string,
     authOverride?: SessionAuthOverrideInput
   ) => Promise<SessionDescriptor>;
+  ackStreamDelivery: (input: StreamDeliveryAckInput) => { ok: true };
   writeSession: (sessionId: string, data: string) => { ok: true };
   resizeSession: (sessionId: string, cols: number, rows: number) => { ok: true };
   closeSession: (sessionId: string) => Promise<{ ok: true }>;
@@ -259,6 +270,7 @@ export interface ServiceContainer {
   getSessionCwd: (connectionId: string) => Promise<{ cwd: string } | null>;
   execBatchCommand: (input: CommandBatchExecInput) => Promise<BatchCommandExecutionResult>;
   listAuditLogs: (limit: number) => AuditLogRecord[];
+  clearAuditLogs: () => { ok: true; deleted: number };
   listMigrations: () => MigrationRecord[];
   listRemoteFiles: (connectionId: string, path: string) => Promise<RemoteFileEntry[]>;
   listLocalFiles: (path: string) => Promise<RemoteFileEntry[]>;
@@ -340,6 +352,7 @@ export interface ServiceContainer {
   backupRestore: (archiveId: string, conflictPolicy: RestoreConflictPolicy) => Promise<{ ok: true }>;
   masterPasswordSet: (password: string) => Promise<{ ok: true }>;
   masterPasswordUnlock: (password: string) => Promise<{ ok: true }>;
+  masterPasswordChange: (oldPassword: string, newPassword: string) => Promise<{ ok: true }>;
   masterPasswordClearRemembered: () => Promise<{ ok: true }>;
   masterPasswordStatus: () => Promise<{ isSet: boolean; isUnlocked: boolean; keytarAvailable: boolean }>;
   masterPasswordGetCached: () => Promise<{ password?: string }>;
@@ -671,201 +684,6 @@ const resolveLocalPath = (rawPath: string): string => {
   return path.resolve(trimmed);
 };
 
-const mergePreferences = (
-  current: AppPreferences,
-  patch: AppPreferencesPatch
-): AppPreferences => {
-  const normalizeWindowAppearance = (
-    value: "system" | "light" | "dark" | undefined,
-    fallback: AppPreferences["window"]["appearance"]
-  ): AppPreferences["window"]["appearance"] => {
-    if (value === "system" || value === "light" || value === "dark") {
-      return value;
-    }
-    return fallback;
-  };
-
-  const normalizeTerminalColor = (value: string | undefined, fallback: string): string => {
-    const trimmed = value?.trim();
-    if (!trimmed || !/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
-      return fallback;
-    }
-    return trimmed;
-  };
-
-  const normalizeTerminalFontSize = (value: number | undefined, fallback: number): number => {
-    if (!Number.isInteger(value) || (value ?? 0) < 10 || (value ?? 0) > 24) {
-      return fallback;
-    }
-    return value as number;
-  };
-
-  const normalizeTerminalLineHeight = (value: number | undefined, fallback: number): number => {
-    if (!Number.isFinite(value) || (value ?? 0) < 1 || (value ?? 0) > 2) {
-      return fallback;
-    }
-    return value as number;
-  };
-
-  const normalizeTerminalFontFamily = (value: string | undefined, fallback: string): string => {
-    if (typeof value !== "string") {
-      return fallback;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : fallback;
-  };
-
-  const normalizeBackgroundOpacity = (value: number | undefined, fallback: number): number => {
-    if (!Number.isFinite(value)) {
-      return fallback;
-    }
-    const rounded = Math.round(value as number);
-    if (rounded < 30 || rounded > 80) {
-      return fallback;
-    }
-    return rounded;
-  };
-
-  const normalizeKeepAliveIntervalSec = (value: number | undefined, fallback: number): number => {
-    if (!Number.isInteger(value) || (value ?? 0) < 5 || (value ?? 0) > 600) {
-      return fallback;
-    }
-    return value as number;
-  };
-
-  return {
-    transfer: {
-      uploadDefaultDir:
-        patch.transfer?.uploadDefaultDir?.trim() || current.transfer.uploadDefaultDir,
-      downloadDefaultDir:
-        patch.transfer?.downloadDefaultDir?.trim() || current.transfer.downloadDefaultDir
-    },
-    remoteEdit: {
-      defaultEditorCommand:
-        patch.remoteEdit?.defaultEditorCommand !== undefined
-          ? patch.remoteEdit.defaultEditorCommand.trim()
-          : current.remoteEdit.defaultEditorCommand,
-      editorMode:
-        patch.remoteEdit?.editorMode ?? current.remoteEdit.editorMode
-    },
-    commandCenter: {
-      rememberTemplateParams:
-        patch.commandCenter?.rememberTemplateParams ?? current.commandCenter.rememberTemplateParams,
-      batchMaxConcurrency: normalizeBatchMaxConcurrency(
-        patch.commandCenter?.batchMaxConcurrency,
-        current.commandCenter.batchMaxConcurrency
-      ),
-      batchRetryCount: normalizeBatchRetryCount(
-        patch.commandCenter?.batchRetryCount,
-        current.commandCenter.batchRetryCount
-      )
-    },
-    terminal: {
-      backgroundColor: normalizeTerminalColor(
-        patch.terminal?.backgroundColor,
-        current.terminal.backgroundColor
-      ),
-      foregroundColor: normalizeTerminalColor(
-        patch.terminal?.foregroundColor,
-        current.terminal.foregroundColor
-      ),
-      fontSize: normalizeTerminalFontSize(
-        patch.terminal?.fontSize,
-        current.terminal.fontSize
-      ),
-      lineHeight: normalizeTerminalLineHeight(
-        patch.terminal?.lineHeight,
-        current.terminal.lineHeight
-      ),
-      fontFamily: normalizeTerminalFontFamily(
-        patch.terminal?.fontFamily,
-        current.terminal.fontFamily
-      )
-    },
-    ssh: {
-      keepAliveEnabled: patch.ssh?.keepAliveEnabled ?? current.ssh.keepAliveEnabled,
-      keepAliveIntervalSec: normalizeKeepAliveIntervalSec(
-        patch.ssh?.keepAliveIntervalSec,
-        current.ssh.keepAliveIntervalSec
-      )
-    },
-    backup: {
-      remotePath: patch.backup?.remotePath !== undefined
-        ? patch.backup.remotePath
-        : current.backup.remotePath,
-      rclonePath: patch.backup?.rclonePath !== undefined
-        ? patch.backup.rclonePath
-        : current.backup.rclonePath,
-      defaultBackupConflictPolicy:
-        patch.backup?.defaultBackupConflictPolicy ?? current.backup.defaultBackupConflictPolicy,
-      defaultRestoreConflictPolicy:
-        patch.backup?.defaultRestoreConflictPolicy ?? current.backup.defaultRestoreConflictPolicy,
-      rememberPassword:
-        patch.backup?.rememberPassword ?? current.backup.rememberPassword,
-      lastBackupAt:
-        patch.backup?.lastBackupAt !== undefined
-          ? patch.backup.lastBackupAt
-          : current.backup.lastBackupAt
-    },
-    window: {
-      appearance: normalizeWindowAppearance(
-        patch.window?.appearance,
-        current.window.appearance
-      ),
-      minimizeToTray: patch.window?.minimizeToTray ?? current.window.minimizeToTray,
-      confirmBeforeClose: patch.window?.confirmBeforeClose ?? current.window.confirmBeforeClose,
-      backgroundImagePath: patch.window?.backgroundImagePath !== undefined
-        ? patch.window.backgroundImagePath.trim()
-        : current.window.backgroundImagePath,
-      backgroundOpacity: normalizeBackgroundOpacity(
-        patch.window?.backgroundOpacity,
-        current.window.backgroundOpacity
-      )
-    },
-    traceroute: {
-      nexttracePath: patch.traceroute?.nexttracePath !== undefined
-        ? patch.traceroute.nexttracePath
-        : current.traceroute.nexttracePath,
-      protocol: patch.traceroute?.protocol !== undefined
-        ? patch.traceroute.protocol
-        : current.traceroute.protocol,
-      port: patch.traceroute?.port !== undefined
-        ? patch.traceroute.port
-        : current.traceroute.port,
-      queries: patch.traceroute?.queries !== undefined
-        ? patch.traceroute.queries
-        : current.traceroute.queries,
-      maxHops: patch.traceroute?.maxHops !== undefined
-        ? patch.traceroute.maxHops
-        : current.traceroute.maxHops,
-      ipVersion: patch.traceroute?.ipVersion !== undefined
-        ? patch.traceroute.ipVersion
-        : current.traceroute.ipVersion,
-      dataProvider: patch.traceroute?.dataProvider !== undefined
-        ? patch.traceroute.dataProvider
-        : current.traceroute.dataProvider,
-      noRdns: patch.traceroute?.noRdns !== undefined
-        ? patch.traceroute.noRdns
-        : current.traceroute.noRdns,
-      language: patch.traceroute?.language !== undefined
-        ? patch.traceroute.language
-        : current.traceroute.language,
-      powProvider: patch.traceroute?.powProvider !== undefined
-        ? patch.traceroute.powProvider
-        : current.traceroute.powProvider
-    },
-    audit: {
-      retentionDays:
-        patch.audit?.retentionDays !== undefined &&
-        Number.isInteger(patch.audit.retentionDays) &&
-        patch.audit.retentionDays >= 0 &&
-        patch.audit.retentionDays <= 365
-          ? patch.audit.retentionDays
-          : current.audit.retentionDays
-    }
-  };
-};
-
 const parseUptimeSeconds = (raw: string): number => {
   const firstLine = raw.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   if (!firstLine) {
@@ -996,7 +814,7 @@ export const createServiceContainer = (
     if (!meta) return;
     const cached = await keytarCache.recall();
     if (!cached) return;
-    if (verifyMasterPassword(cached, meta)) {
+    if (await verifyMasterPassword(cached, meta)) {
       masterPassword = cached;
       logger.info("[Security] recalled master password from keytar");
     }
@@ -1010,9 +828,29 @@ export const createServiceContainer = (
     getMasterPassword: () => masterPassword
   });
 
+  const auditEnabledForSession = connections.getAppPreferences().audit.enabled;
+  const auditRuntime = resolveAuditRuntime(connections.getAppPreferences().audit);
+  const appendAuditLogDirect = connections.appendAuditLog.bind(connections);
+
+  const appendAuditLogIfEnabled = (payload: {
+    action: string;
+    level: "info" | "warn" | "error";
+    connectionId?: string;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }): void => {
+    if (!auditEnabledForSession) {
+      return;
+    }
+    appendAuditLogDirect(payload);
+  };
+
   // ─── Audit log auto-purge ──────────────────────────────────────────────
-  const purgeExpiredAuditLogs = (): void => {
+  const purgeExpiredAuditLogs = (allowWhenDisabled = false): void => {
     try {
+      if (!auditEnabledForSession && !allowWhenDisabled) {
+        return;
+      }
       const prefs = connections.getAppPreferences();
       const days = prefs.audit.retentionDays;
       if (days > 0) {
@@ -1026,8 +864,16 @@ export const createServiceContainer = (
     }
   };
 
-  purgeExpiredAuditLogs();
-  const auditPurgeTimer = setInterval(purgeExpiredAuditLogs, 6 * 3600_000);
+  if (auditRuntime.runStartupPurge) {
+    const prefs = connections.getAppPreferences();
+    const days = prefs.audit.retentionDays;
+    if (days > 0) {
+      purgeExpiredAuditLogs(true);
+    }
+  }
+  const auditPurgeTimer = auditRuntime.runPeriodicPurge
+    ? setInterval(purgeExpiredAuditLogs, 6 * 3600_000)
+    : undefined;
 
   const activeSessions = new Map<string, ActiveSession>();
   const activeConnections = new Map<string, SshConnection>();
@@ -1189,11 +1035,38 @@ export const createServiceContainer = (
     };
   };
 
-  const sendSessionData = (sender: WebContents, payload: SessionDataEvent): void => {
-    if (!sender.isDestroyed()) {
-      sender.send(IPCChannel.SessionData, payload);
-    }
-  };
+  const sessionDataDispatcher = createOrderedBytesDispatcher<SessionDataEvent>({
+    channel: IPCChannel.SessionData,
+    flushIntervalMs: 16,
+    targetChunkBytes: 64 * 1024,
+    highWaterBytes: 512 * 1024,
+    lowWaterBytes: 256 * 1024,
+    buildPayload: ({ streamId, deliveryId, chunk }) => ({
+      sessionId: streamId,
+      data: chunk,
+      deliveryId,
+      byteLength: Buffer.byteLength(chunk, "utf8")
+    })
+  });
+
+  const createMonitorDispatcher = <TSnapshot>(channel: string) =>
+    createLatestOnlyDispatcher<StreamDeliveryEnvelope<TSnapshot>, TSnapshot>({
+      channel,
+      buildPayload: ({ deliveryId, payload }) => ({
+        deliveryId,
+        payload
+      })
+    });
+
+  const systemMonitorDispatcher = createMonitorDispatcher<MonitorSnapshot>(
+    IPCChannel.MonitorSystemData
+  );
+  const processMonitorDispatcher = createMonitorDispatcher<ProcessSnapshot>(
+    IPCChannel.MonitorProcessData
+  );
+  const networkMonitorDispatcher = createMonitorDispatcher<NetworkSnapshot>(
+    IPCChannel.MonitorNetworkData
+  );
 
   const sendSessionStatus = (sender: WebContents, payload: SessionStatusEvent): void => {
     if (!sender.isDestroyed()) {
@@ -1212,14 +1085,60 @@ export const createServiceContainer = (
     sender.send(IPCChannel.SftpTransferStatus, payload);
   };
 
-  const updateSessionStatus = (sessionId: string, status: SessionStatus, reason?: string): void => {
+  const ackStreamDelivery = (input: StreamDeliveryAckInput): { ok: true } => {
+    switch (input.streamKind) {
+      case "session":
+        sessionDataDispatcher.ack({
+          streamId: input.streamId,
+          deliveryId: input.deliveryId,
+          consumedBytes: input.consumedBytes
+        });
+        break;
+      case "monitor-system":
+        systemMonitorDispatcher.ack({
+          streamId: input.streamId,
+          deliveryId: input.deliveryId
+        });
+        break;
+      case "monitor-process":
+        processMonitorDispatcher.ack({
+          streamId: input.streamId,
+          deliveryId: input.deliveryId
+        });
+        break;
+      case "monitor-network":
+        networkMonitorDispatcher.ack({
+          streamId: input.streamId,
+          deliveryId: input.deliveryId
+        });
+        break;
+    }
+
+    return { ok: true };
+  };
+
+  const finalizeRemoteSession = (
+    sessionId: string,
+    status: Extract<SessionStatus, "disconnected" | "failed">,
+    reason?: string
+  ): void => {
     const active = activeSessions.get(sessionId);
     if (!active) {
       return;
     }
 
     active.descriptor.status = status;
-    sendSessionStatus(active.sender, { sessionId, status, reason });
+    sessionDataDispatcher.closeWhenDrained(sessionId, () => {
+      const drained = activeSessions.get(sessionId);
+      if (!drained) {
+        return;
+      }
+
+      activeSessions.delete(sessionId);
+      drained.descriptor.status = status;
+      sendSessionStatus(drained.sender, { sessionId, status, reason });
+      void closeConnectionIfIdle(drained.connectionId);
+    });
   };
 
   const establishConnection = async (
@@ -1301,6 +1220,7 @@ export const createServiceContainer = (
     const runtime = systemMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
+      systemMonitorDispatcher.clear(connectionId);
       await runtime.controller.stop();
       systemMonitorRuntimes.delete(connectionId);
     }
@@ -1313,6 +1233,7 @@ export const createServiceContainer = (
     const runtime = processMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
+      processMonitorDispatcher.clear(connectionId);
       await runtime.controller.stop();
       processMonitorRuntimes.delete(connectionId);
     }
@@ -1326,6 +1247,7 @@ export const createServiceContainer = (
     const runtime = networkMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
+      networkMonitorDispatcher.clear(connectionId);
       await runtime.controller.stop();
       networkMonitorRuntimes.delete(connectionId);
     }
@@ -1601,7 +1523,11 @@ export const createServiceContainer = (
       isReceiverAlive: () => Boolean(runtime.sender && !runtime.sender.isDestroyed()),
       emitSnapshot: (snapshot) => {
         if (runtime.sender && !runtime.sender.isDestroyed()) {
-          runtime.sender.send(IPCChannel.MonitorSystemData, snapshot);
+          systemMonitorDispatcher.publish({
+            streamId: connectionId,
+            sender: runtime.sender,
+            payload: snapshot
+          });
         }
       },
       readSelection: () => monitorStates.get(connectionId),
@@ -1663,7 +1589,11 @@ export const createServiceContainer = (
         isReceiverAlive: () => Boolean(runtime.sender && !runtime.sender.isDestroyed()),
         emitSnapshot: (snapshot) => {
           if (runtime.sender && !runtime.sender.isDestroyed()) {
-            runtime.sender.send(IPCChannel.MonitorProcessData, snapshot);
+            processMonitorDispatcher.publish({
+              streamId: connectionId,
+              sender: runtime.sender,
+              payload: snapshot
+            });
           }
         },
         logger,
@@ -1742,7 +1672,11 @@ export const createServiceContainer = (
         isReceiverAlive: () => Boolean(runtime.sender && !runtime.sender.isDestroyed()),
         emitSnapshot: (snapshot) => {
           if (runtime.sender && !runtime.sender.isDestroyed()) {
-            runtime.sender.send(IPCChannel.MonitorNetworkData, snapshot);
+            networkMonitorDispatcher.publish({
+              streamId: connectionId,
+              sender: runtime.sender,
+              payload: snapshot
+            });
           }
         },
         readToolCache: () => networkToolCache.get(connectionId),
@@ -1866,7 +1800,7 @@ export const createServiceContainer = (
         })
       ]);
 
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.init_ready",
         level: "info",
         connectionId,
@@ -1876,7 +1810,7 @@ export const createServiceContainer = (
     } catch (error) {
       const reason = normalizeError(error);
       logger.warn("[SFTP] warmup failed", { connectionId, reason });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.init_failed",
         level: "warn",
         connectionId,
@@ -1908,7 +1842,7 @@ export const createServiceContainer = (
       applyAppearanceToAllWindows(saved.window.appearance);
     }
 
-    if (patch.audit?.retentionDays !== undefined) {
+    if (patch.audit?.retentionDays !== undefined && auditEnabledForSession) {
       purgeExpiredAuditLogs();
     }
 
@@ -2101,7 +2035,7 @@ export const createServiceContainer = (
       await disposeAllMonitorSessions(profile.id);
     }
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.upsert",
       level: "info",
       connectionId: profile.id,
@@ -2182,7 +2116,7 @@ export const createServiceContainer = (
         connectionId,
         reason
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "connection.auth_override_persist_failed",
         level: "warn",
         connectionId,
@@ -2508,9 +2442,30 @@ export const createServiceContainer = (
     });
     activeTracerouteProcess = child;
 
-    const sendEvent = (event: TracerouteEvent): void => {
-      if (!sender.isDestroyed()) {
+    const pendingTracerouteEvents: TracerouteEvent[] = [];
+    let tracerouteFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const flushTracerouteEvents = (): void => {
+      tracerouteFlushTimer = undefined;
+      if (pendingTracerouteEvents.length === 0 || sender.isDestroyed()) return;
+      const batch = pendingTracerouteEvents.splice(0);
+      for (const event of batch) {
         sender.send(IPCChannel.TracerouteData, event);
+      }
+    };
+
+    const sendEvent = (event: TracerouteEvent): void => {
+      if (sender.isDestroyed()) return;
+      if (event.type === "done" || event.type === "error") {
+        if (tracerouteFlushTimer) { clearTimeout(tracerouteFlushTimer); tracerouteFlushTimer = undefined; }
+        const batch = pendingTracerouteEvents.splice(0);
+        for (const e of batch) { sender.send(IPCChannel.TracerouteData, e); }
+        sender.send(IPCChannel.TracerouteData, event);
+        return;
+      }
+      pendingTracerouteEvents.push(event);
+      if (!tracerouteFlushTimer) {
+        tracerouteFlushTimer = setTimeout(flushTracerouteEvents, 50);
       }
     };
 
@@ -2536,6 +2491,7 @@ export const createServiceContainer = (
 
     child.on("error", (err) => {
       sendEvent({ type: "error", message: err.message });
+      child.removeAllListeners();
       if (activeTracerouteProcess === child) {
         activeTracerouteProcess = null;
       }
@@ -2550,6 +2506,7 @@ export const createServiceContainer = (
         sendEvent({ type: "data", line: stderrBuffer });
       }
       sendEvent({ type: "done", exitCode: code });
+      child.removeAllListeners();
       if (activeTracerouteProcess === child) {
         activeTracerouteProcess = null;
       }
@@ -2560,6 +2517,7 @@ export const createServiceContainer = (
 
   const tracerouteStop = (): { ok: true } => {
     if (activeTracerouteProcess) {
+      activeTracerouteProcess.removeAllListeners();
       activeTracerouteProcess.kill();
       activeTracerouteProcess = null;
     }
@@ -2591,7 +2549,7 @@ export const createServiceContainer = (
     await closeConnectionIfIdle(id);
     connections.remove(id);
     monitorStates.delete(id);
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.remove",
       level: "warn",
       connectionId: id,
@@ -2605,10 +2563,10 @@ export const createServiceContainer = (
   const ENCRYPTED_EXPORT_PREFIX = "b64##";
   const trimBomAndWhitespace = (value: string): string => value.replace(/^\uFEFF/, "").trim();
 
-  const parseImportPayloadText = (
+  const parseImportPayloadText = async (
     rawText: string,
     decryptionPassword?: string
-  ): unknown => {
+  ): Promise<unknown> => {
     const normalizedText = trimBomAndWhitespace(rawText);
     const encryptedPrefix = ENCRYPTED_EXPORT_PREFIX;
 
@@ -2626,7 +2584,7 @@ export const createServiceContainer = (
 
       let decryptedText: string;
       try {
-        decryptedText = decryptConnectionExportPayload(encryptedB64, decryptionPassword);
+        decryptedText = await decryptConnectionExportPayload(encryptedB64, decryptionPassword);
       } catch {
         throw new Error(
           `${CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX}密码错误或文件损坏，请重试`
@@ -2725,7 +2683,7 @@ export const createServiceContainer = (
     };
     const plainJson = JSON.stringify(exportFile, null, 2);
     const fileContent = encrypted
-      ? `${ENCRYPTED_EXPORT_PREFIX}${encryptConnectionExportPayload(
+      ? `${ENCRYPTED_EXPORT_PREFIX}${await encryptConnectionExportPayload(
           plainJson,
           encryptionPassword
         )}`
@@ -2733,7 +2691,7 @@ export const createServiceContainer = (
 
     fs.writeFileSync(result.filePath, fileContent, "utf-8");
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.export",
       level: "info",
       message: `Exported ${exportedConnections.length} connections`,
@@ -2756,7 +2714,7 @@ export const createServiceContainer = (
       buildExportedConnection
     });
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.export.batch",
       level: "info",
       message: `Batch exported ${result.exported}/${result.total} connections`,
@@ -2770,7 +2728,7 @@ export const createServiceContainer = (
     input: ConnectionImportPreviewInput
   ): Promise<ConnectionImportEntry[]> => {
     const raw = fs.readFileSync(input.filePath, "utf-8");
-    const data = parseImportPayloadText(raw, input.decryptionPassword);
+    const data = await parseImportPayloadText(raw, input.decryptionPassword);
 
     if (isNextShellFormat(data)) {
       return parseNextShellImport(data);
@@ -2878,7 +2836,7 @@ export const createServiceContainer = (
       }
     }
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.import",
       level: "info",
       message: `Imported connections: ${result.created} created, ${result.overwritten} overwritten, ${result.skipped} skipped, ${result.failed} failed`,
@@ -2943,36 +2901,42 @@ export const createServiceContainer = (
 
       shell.on("data", (chunk: Buffer | string) => {
         const active = activeSessions.get(descriptor.id);
-        const encoding = active?.terminalEncoding ?? profile.terminalEncoding;
-        sendSessionData(sender, {
-          sessionId: descriptor.id,
-          data: decodeTerminalData(chunk, encoding)
+        if (!active) {
+          return;
+        }
+        sessionDataDispatcher.push({
+          streamId: descriptor.id,
+          sender: active.sender,
+          chunk: decodeTerminalData(chunk, active.terminalEncoding),
+          onPause: () => shell.pause(),
+          onResume: () => shell.resume()
         });
       });
 
       shell.stderr.on("data", (chunk: Buffer | string) => {
         const active = activeSessions.get(descriptor.id);
-        const encoding = active?.terminalEncoding ?? profile.terminalEncoding;
-        sendSessionData(sender, {
-          sessionId: descriptor.id,
-          data: decodeTerminalData(chunk, encoding)
+        if (!active) {
+          return;
+        }
+        sessionDataDispatcher.push({
+          streamId: descriptor.id,
+          sender: active.sender,
+          chunk: decodeTerminalData(chunk, active.terminalEncoding),
+          onPause: () => shell.pause(),
+          onResume: () => shell.resume()
         });
       });
 
       shell.on("close", () => {
-        const active = activeSessions.get(descriptor.id);
-        if (active) {
-          activeSessions.delete(descriptor.id);
-          sendSessionStatus(active.sender, {
-            sessionId: descriptor.id,
-            status: "disconnected"
-          });
-          void closeConnectionIfIdle(connectionId);
-        }
+        shell.removeAllListeners();
+        shell.stderr.removeAllListeners();
+        finalizeRemoteSession(descriptor.id, "disconnected");
       });
 
       shell.on("error", (error: unknown) => {
-        updateSessionStatus(descriptor.id, "failed", normalizeError(error));
+        shell.removeAllListeners();
+        shell.stderr.removeAllListeners();
+        finalizeRemoteSession(descriptor.id, "failed", normalizeError(error));
       });
 
       let connectedReason = await warmupSftp(connectionId, connection);
@@ -3006,7 +2970,7 @@ export const createServiceContainer = (
         reason: connectedReason
       });
 
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "session.open",
         level: "info",
         connectionId,
@@ -3032,7 +2996,7 @@ export const createServiceContainer = (
           reason
         });
       }
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "session.open_failed",
         level: "error",
         connectionId,
@@ -3079,6 +3043,11 @@ export const createServiceContainer = (
     }
 
     logger.info("[Session] closing", { sessionId, connectionId: active.connectionId });
+    sessionDataDispatcher.clear(sessionId);
+    active.channel.removeAllListeners();
+    if (active.channel.stderr) {
+      active.channel.stderr.removeAllListeners();
+    }
     active.channel.end();
     activeSessions.delete(sessionId);
     sendSessionStatus(active.sender, {
@@ -3086,7 +3055,7 @@ export const createServiceContainer = (
       status: "disconnected"
     });
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "session.close",
       level: "info",
       connectionId: active.connectionId,
@@ -3102,6 +3071,9 @@ export const createServiceContainer = (
 
   const enableDebugLog = (sender: WebContents): { ok: true } => {
     debugSenders.add(sender);
+    sender.once("destroyed", () => {
+      debugSenders.delete(sender);
+    });
     return { ok: true };
   };
 
@@ -3110,13 +3082,34 @@ export const createServiceContainer = (
     return { ok: true };
   };
 
-  const emitDebugLog = (entry: DebugLogEntry): void => {
+  const DEBUG_FLUSH_INTERVAL_MS = 200;
+  const DEBUG_MAX_PENDING = 50;
+  let debugPending: DebugLogEntry[] = [];
+  let debugFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const flushDebugLog = (): void => {
+    debugFlushTimer = undefined;
+    if (debugPending.length === 0 || debugSenders.size === 0) return;
+    const batch = debugPending.splice(0);
     for (const sender of debugSenders) {
       if (sender.isDestroyed()) {
         debugSenders.delete(sender);
       } else {
-        sender.send(IPCChannel.DebugLogEvent, entry);
+        for (const entry of batch) {
+          sender.send(IPCChannel.DebugLogEvent, entry);
+        }
       }
+    }
+  };
+
+  const emitDebugLog = (entry: DebugLogEntry): void => {
+    if (debugSenders.size === 0) return;
+    if (debugPending.length >= DEBUG_MAX_PENDING) {
+      debugPending.shift();
+    }
+    debugPending.push(entry);
+    if (!debugFlushTimer) {
+      debugFlushTimer = setTimeout(flushDebugLog, DEBUG_FLUSH_INTERVAL_MS);
     }
   };
 
@@ -3128,6 +3121,7 @@ export const createServiceContainer = (
     assertVisibleTerminalAlive(connectionId);
     const runtime = await ensureSystemMonitorRuntime(connectionId);
     runtime.sender = sender;
+    systemMonitorDispatcher.clear(connectionId);
     return runtime.controller.start();
   };
 
@@ -3135,6 +3129,7 @@ export const createServiceContainer = (
     const runtime = systemMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
+      systemMonitorDispatcher.clear(connectionId);
       void runtime.controller.stop();
     }
     return { ok: true };
@@ -3207,7 +3202,7 @@ export const createServiceContainer = (
       executedAt: new Date().toISOString()
     };
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "command.exec",
       level: result.exitCode === 0 ? "info" : "warn",
       connectionId,
@@ -3346,7 +3341,7 @@ export const createServiceContainer = (
       results: results.sort((a, b) => a.connectionId.localeCompare(b.connectionId))
     };
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "command.exec_batch",
       level: failedCount > 0 ? "warn" : "info",
       message: "Executed batch command",
@@ -3463,7 +3458,7 @@ export const createServiceContainer = (
         status: "success",
         progress: 100
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.upload",
         level: "info",
         connectionId,
@@ -3515,7 +3510,7 @@ export const createServiceContainer = (
         status: "success",
         progress: 100
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.download",
         level: "info",
         connectionId,
@@ -3677,7 +3672,7 @@ export const createServiceContainer = (
         status: "success",
         progress: 100
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.upload.packed",
         level: "info",
         connectionId,
@@ -3836,7 +3831,7 @@ export const createServiceContainer = (
         status: "success",
         progress: 100
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.download.packed",
         level: "info",
         connectionId,
@@ -4044,7 +4039,7 @@ export const createServiceContainer = (
         status: "success",
         progress: 100
       });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.transfer.packed",
         level: "info",
         connectionId: sourceConnectionId,
@@ -4093,7 +4088,7 @@ export const createServiceContainer = (
     getConnectionOrThrow(connectionId);
     const connection = await ensureConnection(connectionId);
     await connection.mkdir(pathName, true);
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "sftp.mkdir",
       level: "info",
       connectionId,
@@ -4111,7 +4106,7 @@ export const createServiceContainer = (
     getConnectionOrThrow(connectionId);
     const connection = await ensureConnection(connectionId);
     await connection.rename(fromPath, toPath);
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "sftp.rename",
       level: "warn",
       connectionId,
@@ -4133,7 +4128,7 @@ export const createServiceContainer = (
       type === "directory" ? "directory" : type === "link" ? "link" : "file";
 
     await connection.remove(targetPath, normalizedType);
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "sftp.delete",
       level: "warn",
       connectionId,
@@ -4145,6 +4140,10 @@ export const createServiceContainer = (
 
   const listAuditLogs = (limit: number): AuditLogRecord[] => {
     return connections.listAuditLogs(limit);
+  };
+
+  const clearAuditLogs = (): { ok: true; deleted: number } => {
+    return { ok: true, deleted: connections.clearAuditLogs() };
   };
 
   const listMigrations = (): MigrationRecord[] => {
@@ -4199,7 +4198,7 @@ export const createServiceContainer = (
     getConnectionOrThrow(connectionId);
     try {
       const result = await remoteEditManager.open(connectionId, remotePath, editorCommand, sender);
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.edit_open",
         level: "info",
         connectionId,
@@ -4215,7 +4214,7 @@ export const createServiceContainer = (
         requestedCommand?: string;
         resolvedCommand?: string;
       };
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "sftp.edit_open_failed",
         level: "error",
         connectionId,
@@ -4236,7 +4235,7 @@ export const createServiceContainer = (
 
   const stopRemoteEdit = async (editId: string): Promise<{ ok: true }> => {
     await remoteEditManager.stop(editId);
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "sftp.edit_stop",
       level: "info",
       message: "Stopped remote file live editing",
@@ -4247,7 +4246,7 @@ export const createServiceContainer = (
 
   const stopAllRemoteEdits = async (): Promise<{ ok: true }> => {
     await remoteEditManager.stopAll();
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "sftp.edit_stop_all",
       level: "info",
       message: "Stopped all remote file live editing sessions"
@@ -4288,6 +4287,7 @@ export const createServiceContainer = (
 
     const runtime = await ensureProcessMonitorRuntime(connectionId);
     runtime.sender = sender;
+    processMonitorDispatcher.clear(connectionId);
     return runtime.controller.start();
   };
 
@@ -4295,6 +4295,7 @@ export const createServiceContainer = (
     const runtime = processMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
+      processMonitorDispatcher.clear(connectionId);
       void runtime.controller.stop();
     }
     return { ok: true };
@@ -4358,7 +4359,7 @@ export const createServiceContainer = (
     if (result.exitCode !== 0) {
       throw new Error(`kill 失败 (exit ${result.exitCode}): ${result.stdout.trim() || "unknown error"}`);
     }
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "monitor.process_kill",
       level: "warn",
       connectionId,
@@ -4379,6 +4380,7 @@ export const createServiceContainer = (
 
     const runtime = await ensureNetworkMonitorRuntime(connectionId);
     runtime.sender = sender;
+    networkMonitorDispatcher.clear(connectionId);
     return runtime.controller.start();
   };
 
@@ -4386,6 +4388,7 @@ export const createServiceContainer = (
     const runtime = networkMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
+      networkMonitorDispatcher.clear(connectionId);
       void runtime.controller.stop();
     }
     return { ok: true };
@@ -4418,7 +4421,7 @@ export const createServiceContainer = (
 
   const rememberPasswordBestEffort = async (
     password: string,
-    phase: "set" | "unlock"
+    phase: "set" | "unlock" | "change"
   ): Promise<void> => {
     const prefs = connections.getAppPreferences();
     if (!prefs.backup.rememberPassword) {
@@ -4430,7 +4433,7 @@ export const createServiceContainer = (
     } catch (error) {
       const reason = normalizeError(error);
       logger.warn("[Security] failed to cache master password in keytar", { phase, reason });
-      connections.appendAuditLog({
+      appendAuditLogIfEnabled({
         action: "master_password.cache_failed",
         level: "warn",
         message: "Failed to cache master password in keytar",
@@ -4448,11 +4451,11 @@ export const createServiceContainer = (
   };
 
   const masterPasswordSet = async (password: string): Promise<{ ok: true }> => {
-    const meta = createMasterKeyMeta(password);
+    const meta = await createMasterKeyMeta(password);
     connections.saveMasterKeyMeta(meta);
     masterPassword = password;
     await rememberPasswordBestEffort(password, "set");
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "master_password.set",
       level: "info",
       message: "Master password configured"
@@ -4462,7 +4465,7 @@ export const createServiceContainer = (
 
   const masterPasswordUnlock = async (password: string): Promise<{ ok: true }> => {
     const meta = getMasterKeyMetaOrThrow();
-    if (!verifyMasterPassword(password, meta)) {
+    if (!(await verifyMasterPassword(password, meta))) {
       throw new Error("主密码错误。");
     }
     masterPassword = password;
@@ -4470,8 +4473,25 @@ export const createServiceContainer = (
     return { ok: true };
   };
 
+  const masterPasswordChange = async (oldPassword: string, newPassword: string): Promise<{ ok: true }> => {
+    return changeMasterPassword({
+      oldPassword,
+      newPassword,
+      getMasterKeyMeta: () => connections.getMasterKeyMeta(),
+      saveMasterKeyMeta: (meta) => connections.saveMasterKeyMeta(meta),
+      setMasterPassword: (password) => {
+        masterPassword = password;
+      },
+      rememberPasswordBestEffort,
+      appendAuditLog: (payload) => {
+        appendAuditLogIfEnabled(payload);
+      }
+    });
+  };
+
   const masterPasswordClearRemembered = async (): Promise<{ ok: true }> => {
     await keytarCache.clear();
+    clearDerivedKeyCache();
     return { ok: true };
   };
 
@@ -4495,7 +4515,7 @@ export const createServiceContainer = (
     const input = candidate?.trim();
     if (input) {
       const meta = getMasterKeyMetaOrThrow();
-      if (!verifyMasterPassword(input, meta)) {
+      if (!(await verifyMasterPassword(input, meta))) {
         throw new Error("主密码错误。");
       }
       masterPassword = input;
@@ -4536,7 +4556,7 @@ export const createServiceContainer = (
       throw new Error("该连接未保存登录密码。");
     }
 
-    connections.appendAuditLog({
+    appendAuditLogIfEnabled({
       action: "connection.password_reveal",
       level: "warn",
       connectionId,
@@ -4586,7 +4606,10 @@ export const createServiceContainer = (
     // 先同步 flush 所有缓冲写入，避免后续 await 链未跑完就退出导致丢失
     connections.flush();
 
-    clearInterval(auditPurgeTimer);
+    if (auditPurgeTimer) clearInterval(auditPurgeTimer);
+
+    if (debugFlushTimer) { clearTimeout(debugFlushTimer); debugFlushTimer = undefined; }
+    debugPending.length = 0;
 
     // Dispose all hidden sessions for every connection that has any
     const allConnectionIds = new Set([
@@ -4654,6 +4677,7 @@ export const createServiceContainer = (
     openDirectoryDialog,
     openLocalPath,
     openSession,
+    ackStreamDelivery,
     writeSession,
     resizeSession,
     closeSession,
@@ -4665,6 +4689,7 @@ export const createServiceContainer = (
     getSessionCwd,
     execBatchCommand,
     listAuditLogs,
+    clearAuditLogs,
     listMigrations,
     listRemoteFiles,
     listLocalFiles,
@@ -4701,6 +4726,7 @@ export const createServiceContainer = (
     backupRestore,
     masterPasswordSet,
     masterPasswordUnlock,
+    masterPasswordChange,
     masterPasswordClearRemembered,
     masterPasswordStatus,
     masterPasswordGetCached,

@@ -127,9 +127,33 @@ export const sessionGetCwdSchema = z.object({
   connectionId: z.string().uuid()
 });
 
+export const streamKindSchema = z.enum([
+  "session",
+  "monitor-system",
+  "monitor-process",
+  "monitor-network"
+]);
+
+export const streamDeliveryAckSchema = z.object({
+  streamKind: streamKindSchema,
+  streamId: z.string().min(1),
+  deliveryId: z.number().int().min(1),
+  consumedBytes: z.number().int().min(0).optional()
+}).superRefine((value, ctx) => {
+  if (value.streamKind === "session" && typeof value.consumedBytes !== "number") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "consumedBytes is required when streamKind is session",
+      path: ["consumedBytes"]
+    });
+  }
+});
+
 export const sessionDataEventSchema = z.object({
   sessionId: z.string().uuid(),
-  data: z.string()
+  data: z.string(),
+  deliveryId: z.number().int().min(1),
+  byteLength: z.number().int().min(0)
 });
 
 export const sessionStatusEventSchema = z.object({
@@ -202,6 +226,8 @@ export const commandBatchExecSchema = z.object({
 export const auditListSchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100)
 });
+
+export const auditClearSchema = z.object({});
 
 export const storageMigrationsSchema = z.object({});
 
@@ -386,7 +412,9 @@ export const appPreferencesSchema = z.object({
     minimizeToTray: z.boolean().default(DEFAULT_APP_PREFERENCES.window.minimizeToTray),
     confirmBeforeClose: z.boolean().default(DEFAULT_APP_PREFERENCES.window.confirmBeforeClose),
     backgroundImagePath: z.string().default(DEFAULT_APP_PREFERENCES.window.backgroundImagePath),
-    backgroundOpacity: z.coerce.number().int().min(30).max(80).default(DEFAULT_APP_PREFERENCES.window.backgroundOpacity)
+    backgroundOpacity: z.coerce.number().int().min(30).max(80).default(DEFAULT_APP_PREFERENCES.window.backgroundOpacity),
+    leftSidebarDefaultCollapsed: z.boolean().default(DEFAULT_APP_PREFERENCES.window.leftSidebarDefaultCollapsed),
+    bottomWorkbenchDefaultCollapsed: z.boolean().default(DEFAULT_APP_PREFERENCES.window.bottomWorkbenchDefaultCollapsed)
   }).default(DEFAULT_APP_PREFERENCES.window),
   traceroute: z.object({
     nexttracePath: z.string().default(DEFAULT_APP_PREFERENCES.traceroute.nexttracePath),
@@ -401,6 +429,7 @@ export const appPreferencesSchema = z.object({
     powProvider: z.enum(["api.nxtrace.org", "sakura"]).default(DEFAULT_APP_PREFERENCES.traceroute.powProvider)
   }).default(DEFAULT_APP_PREFERENCES.traceroute),
   audit: z.object({
+    enabled: z.boolean().default(DEFAULT_APP_PREFERENCES.audit.enabled),
     retentionDays: z.coerce.number().int().min(0).max(365).default(DEFAULT_APP_PREFERENCES.audit.retentionDays)
   }).default(DEFAULT_APP_PREFERENCES.audit)
 }).default(DEFAULT_APP_PREFERENCES);
@@ -443,7 +472,9 @@ export const appPreferencesPatchSchema = z.object({
     minimizeToTray: z.boolean().optional(),
     confirmBeforeClose: z.boolean().optional(),
     backgroundImagePath: z.string().optional(),
-    backgroundOpacity: z.coerce.number().int().min(30).max(80).optional()
+    backgroundOpacity: z.coerce.number().int().min(30).max(80).optional(),
+    leftSidebarDefaultCollapsed: z.boolean().optional(),
+    bottomWorkbenchDefaultCollapsed: z.boolean().optional()
   }).optional(),
   traceroute: z.object({
     nexttracePath: z.string().optional(),
@@ -458,6 +489,7 @@ export const appPreferencesPatchSchema = z.object({
     powProvider: z.enum(["api.nxtrace.org", "sakura"]).optional()
   }).optional(),
   audit: z.object({
+    enabled: z.boolean().optional(),
     retentionDays: z.coerce.number().int().min(0).max(365).optional()
   }).optional()
 });
@@ -534,6 +566,14 @@ export const masterPasswordUnlockSchema = backupPasswordUnlockSchema;
 export const masterPasswordClearRememberedSchema = backupPasswordClearRememberedSchema;
 export const masterPasswordStatusSchema = backupPasswordStatusSchema;
 export const masterPasswordGetCachedSchema = z.object({});
+export const masterPasswordChangeSchema = z.object({
+  oldPassword: z.string().min(1, "原密码不能为空"),
+  newPassword: z.string().min(6, "新密码至少6个字符"),
+  confirmPassword: z.string().min(1)
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "两次输入的新密码不一致",
+  path: ["confirmPassword"]
+});
 
 export const templateParamsListSchema = z.object({
   commandId: z.string().uuid().optional()
@@ -649,6 +689,8 @@ export type SessionWriteInput = z.infer<typeof sessionWriteSchema>;
 export type SessionResizeInput = z.infer<typeof sessionResizeSchema>;
 export type SessionCloseInput = z.infer<typeof sessionCloseSchema>;
 export type SessionGetCwdInput = z.infer<typeof sessionGetCwdSchema>;
+export type StreamKind = z.infer<typeof streamKindSchema>;
+export type StreamDeliveryAckInput = z.infer<typeof streamDeliveryAckSchema>;
 export type SessionDataEvent = z.infer<typeof sessionDataEventSchema>;
 export type SessionStatusEvent = z.infer<typeof sessionStatusEventSchema>;
 export type MonitorSystemInfoSnapshotInput = z.infer<typeof monitorSystemInfoSnapshotSchema>;
@@ -665,6 +707,7 @@ export type MonitorNetworkConnectionsInput = z.infer<typeof monitorNetworkConnec
 export type CommandExecInput = z.infer<typeof commandExecSchema>;
 export type CommandBatchExecInput = z.infer<typeof commandBatchExecSchema>;
 export type AuditListInput = z.infer<typeof auditListSchema>;
+export type AuditClearInput = z.infer<typeof auditClearSchema>;
 export type StorageMigrationsInput = z.infer<typeof storageMigrationsSchema>;
 export type SftpListInput = z.infer<typeof sftpListSchema>;
 export type SftpUploadInput = z.infer<typeof sftpUploadSchema>;
@@ -709,6 +752,7 @@ export type MasterPasswordUnlockInput = z.infer<typeof masterPasswordUnlockSchem
 export type MasterPasswordClearRememberedInput = z.infer<typeof masterPasswordClearRememberedSchema>;
 export type MasterPasswordStatusInput = z.infer<typeof masterPasswordStatusSchema>;
 export type MasterPasswordGetCachedInput = z.infer<typeof masterPasswordGetCachedSchema>;
+export type MasterPasswordChangeInput = z.infer<typeof masterPasswordChangeSchema>;
 export type TemplateParamsListInput = z.infer<typeof templateParamsListSchema>;
 export type TemplateParamsUpsertInput = z.infer<typeof templateParamsUpsertSchema>;
 export type TemplateParamsClearInput = z.infer<typeof templateParamsClearSchema>;

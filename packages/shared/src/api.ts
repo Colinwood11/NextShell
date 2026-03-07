@@ -25,6 +25,7 @@ import type {
 import type {
   AppPreferences,
   AppPreferencesPatchInput,
+  AuditClearInput,
   AuditListInput,
   DebugLogEntry,
   BackupListInput,
@@ -49,6 +50,7 @@ import type {
   ConnectionImportFinalShellPreviewInput,
   ConnectionImportPreviewInput,
   MasterPasswordCachedResult,
+  MasterPasswordChangeInput,
   MasterPasswordClearRememberedInput,
   MasterPasswordGetCachedInput,
   MasterPasswordSetInput,
@@ -83,6 +85,7 @@ import type {
   SessionOpenInput,
   SessionResizeInput,
   SessionStatusEvent,
+  StreamDeliveryAckInput,
   StorageMigrationsInput,
   SessionWriteInput,
   SftpDeleteInput,
@@ -116,6 +119,10 @@ import type {
 } from "./contracts";
 
 export type SessionEventUnsubscribe = () => void;
+export interface StreamDeliveryEnvelope<T> {
+  deliveryId: number;
+  payload: T;
+}
 
 export interface NextShellApi {
   /** Current OS platform, set synchronously from process.platform in the preload. */
@@ -142,6 +149,7 @@ export interface NextShellApi {
     resize: (payload: SessionResizeInput) => Promise<{ ok: true }>;
     close: (payload: SessionCloseInput) => Promise<{ ok: true }>;
     getCwd: (payload: SessionGetCwdInput) => Promise<{ cwd: string } | null>;
+    ackData: (payload: StreamDeliveryAckInput) => Promise<{ ok: true }>;
     onData: (listener: (event: SessionDataEvent) => void) => SessionEventUnsubscribe;
     onStatus: (listener: (event: SessionStatusEvent) => void) => SessionEventUnsubscribe;
   };
@@ -167,6 +175,7 @@ export interface NextShellApi {
   };
   audit: {
     list: (payload: AuditListInput) => Promise<AuditLogRecord[]>;
+    clear: (payload?: AuditClearInput) => Promise<{ ok: true; deleted: number }>;
   };
   storage: {
     migrations: (payload?: StorageMigrationsInput) => Promise<MigrationRecord[]>;
@@ -227,6 +236,7 @@ export interface NextShellApi {
   masterPassword: {
     setPassword: (payload: MasterPasswordSetInput) => Promise<{ ok: true }>;
     unlockPassword: (payload: MasterPasswordUnlockInput) => Promise<{ ok: true }>;
+    changePassword: (payload: MasterPasswordChangeInput) => Promise<{ ok: true }>;
     clearRemembered: (payload?: MasterPasswordClearRememberedInput) => Promise<{ ok: true }>;
     passwordStatus: (payload?: MasterPasswordStatusInput) => Promise<MasterPasswordStatusResult>;
     getCached: (payload?: MasterPasswordGetCachedInput) => Promise<MasterPasswordCachedResult>;

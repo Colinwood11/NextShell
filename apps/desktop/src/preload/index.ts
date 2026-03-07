@@ -5,6 +5,8 @@ import type {
   SessionStatusEvent,
   SftpEditStatusEvent,
   SftpTransferStatusEvent,
+  StreamDeliveryEnvelope,
+  StreamDeliveryAckInput,
   TracerouteEvent
 } from "../../../../packages/shared/src/index";
 import type {
@@ -21,9 +23,14 @@ import { WINDOWS_TITLEBAR_SAFE_TOP } from "../shared/window-ui";
 const masterPasswordApi: NextShellApi["masterPassword"] = {
   setPassword: (payload) => ipcRenderer.invoke(IPCChannel.MasterPasswordSet, payload),
   unlockPassword: (payload) => ipcRenderer.invoke(IPCChannel.MasterPasswordUnlock, payload),
+  changePassword: (payload) => ipcRenderer.invoke(IPCChannel.MasterPasswordChange, payload),
   clearRemembered: () => ipcRenderer.invoke(IPCChannel.MasterPasswordClearRemembered, {}),
   passwordStatus: () => ipcRenderer.invoke(IPCChannel.MasterPasswordStatus, {}),
   getCached: () => ipcRenderer.invoke(IPCChannel.MasterPasswordGetCached, {})
+};
+
+const ackStreamDelivery = (payload: StreamDeliveryAckInput): Promise<{ ok: true }> => {
+  return ipcRenderer.invoke(IPCChannel.StreamDeliveryAck, payload);
 };
 
 const api: NextShellApi = {
@@ -44,6 +51,7 @@ const api: NextShellApi = {
     resize: (payload) => ipcRenderer.invoke(IPCChannel.SessionResize, payload),
     close: (payload) => ipcRenderer.invoke(IPCChannel.SessionClose, payload),
     getCwd: (payload) => ipcRenderer.invoke(IPCChannel.SessionGetCwd, payload),
+    ackData: (payload) => ackStreamDelivery(payload),
     onData: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: SessionDataEvent) => {
         listener(payload);
@@ -71,8 +79,19 @@ const api: NextShellApi = {
     stopSystem: (payload) => ipcRenderer.invoke(IPCChannel.MonitorSystemStop, payload),
     selectSystemInterface: (payload) => ipcRenderer.invoke(IPCChannel.MonitorSystemSelectInterface, payload),
     onSystemData: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: MonitorSnapshot) => {
-        listener(payload);
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        envelope: StreamDeliveryEnvelope<MonitorSnapshot>
+      ) => {
+        try {
+          listener(envelope.payload);
+        } finally {
+          void ackStreamDelivery({
+            streamKind: "monitor-system",
+            streamId: envelope.payload.connectionId,
+            deliveryId: envelope.deliveryId
+          });
+        }
       };
       ipcRenderer.on(IPCChannel.MonitorSystemData, handler);
       return () => {
@@ -82,8 +101,19 @@ const api: NextShellApi = {
     startProcess: (payload) => ipcRenderer.invoke(IPCChannel.MonitorProcessStart, payload),
     stopProcess: (payload) => ipcRenderer.invoke(IPCChannel.MonitorProcessStop, payload),
     onProcessData: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: ProcessSnapshot) => {
-        listener(payload);
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        envelope: StreamDeliveryEnvelope<ProcessSnapshot>
+      ) => {
+        try {
+          listener(envelope.payload);
+        } finally {
+          void ackStreamDelivery({
+            streamKind: "monitor-process",
+            streamId: envelope.payload.connectionId,
+            deliveryId: envelope.deliveryId
+          });
+        }
       };
       ipcRenderer.on(IPCChannel.MonitorProcessData, handler);
       return () => {
@@ -95,8 +125,19 @@ const api: NextShellApi = {
     startNetwork: (payload) => ipcRenderer.invoke(IPCChannel.MonitorNetworkStart, payload),
     stopNetwork: (payload) => ipcRenderer.invoke(IPCChannel.MonitorNetworkStop, payload),
     onNetworkData: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: NetworkSnapshot) => {
-        listener(payload);
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        envelope: StreamDeliveryEnvelope<NetworkSnapshot>
+      ) => {
+        try {
+          listener(envelope.payload);
+        } finally {
+          void ackStreamDelivery({
+            streamKind: "monitor-network",
+            streamId: envelope.payload.connectionId,
+            deliveryId: envelope.deliveryId
+          });
+        }
       };
       ipcRenderer.on(IPCChannel.MonitorNetworkData, handler);
       return () => {
@@ -110,7 +151,8 @@ const api: NextShellApi = {
     execBatch: (payload) => ipcRenderer.invoke(IPCChannel.CommandBatchExec, payload)
   },
   audit: {
-    list: (payload) => ipcRenderer.invoke(IPCChannel.AuditList, payload)
+    list: (payload) => ipcRenderer.invoke(IPCChannel.AuditList, payload),
+    clear: (payload) => ipcRenderer.invoke(IPCChannel.AuditClear, payload ?? {})
   },
   storage: {
     migrations: (payload) => ipcRenderer.invoke(IPCChannel.StorageMigrations, payload ?? {})

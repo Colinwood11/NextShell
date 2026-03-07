@@ -14,6 +14,7 @@ import {
   isSessionGenerationCurrent,
   normalizeOpenError
 } from "./useSessionLifecycle.helpers";
+import { deleteSessionFromCollections } from "../utils/sessionScopedCollections";
 
 type RetrySessionAuthResult =
   | { ok: true }
@@ -99,10 +100,25 @@ export function useSessionLifecycle() {
     window.nextshell.session.close({ sessionId }).catch(() => undefined);
   }, []);
 
-  const clearSessionTracking = useCallback((sessionId: string): void => {
-    cancelledSessionIdsRef.current.delete(sessionId);
-    sessionGenerationRef.current.delete(sessionId);
-    statusToastKeyBySessionRef.current.delete(sessionId);
+  const clearSessionTracking = useCallback((
+    sessionId: string,
+    options?: {
+      preserveCancellation?: boolean;
+      preserveRetryPromise?: boolean;
+    }
+  ): void => {
+    deleteSessionFromCollections(sessionId, [statusToastKeyBySessionRef.current]);
+
+    if (!options?.preserveCancellation) {
+      deleteSessionFromCollections(sessionId, [
+        cancelledSessionIdsRef.current,
+        sessionGenerationRef.current
+      ]);
+    }
+
+    if (!options?.preserveRetryPromise) {
+      deleteSessionFromCollections(sessionId, [inFlightAuthRetryBySessionRef.current]);
+    }
   }, []);
 
   const refreshConnectionsOnce = useCallback((): Promise<void> => {
@@ -420,9 +436,10 @@ export function useSessionLifecycle() {
 
       cancelSessionGeneration(sessionId);
       removeSession(sessionId);
-      if (!keepCancellation) {
-        clearSessionTracking(sessionId);
-      }
+      clearSessionTracking(sessionId, {
+        preserveCancellation: keepCancellation,
+        preserveRetryPromise: keepCancellation
+      });
       window.nextshell.session.close({ sessionId }).catch((error) => {
         message.warning(formatErrorMessage(error, "关闭会话失败"));
       });
@@ -436,19 +453,63 @@ export function useSessionLifecycle() {
       if (!target) {
         return;
       }
-      const keepCancellation =
-        target.status === "connecting" || inFlightAuthRetryBySessionRef.current.has(sessionId);
-
-      cancelSessionGeneration(sessionId);
-      removeSession(sessionId);
-      if (!keepCancellation) {
-        clearSessionTracking(sessionId);
+      if (target.status !== "disconnected") {
+        return;
       }
-      closeSessionSilently(sessionId);
+      if (inFlightAuthRetryBySessionRef.current.has(sessionId)) {
+        return;
+      }
+      if (!beginConnecting(target.connectionId)) {
+        return;
+      }
 
-      await startSession(target.connectionId);
+      setActiveConnection(target.connectionId);
+      setActiveSession(target.id);
+      setSessionStatus(target.id, "connecting", null);
+
+      const sessionGeneration = nextSessionGeneration(target.id);
+
+      try {
+        const openedSession = await window.nextshell.session.open({
+          connectionId: target.connectionId,
+          sessionId: target.id
+        });
+
+        if (!canApplySessionResult(target.id, sessionGeneration)) {
+          closeSessionSilently(target.id);
+          return;
+        }
+
+        finalizeRetriedSession(openedSession, target.title);
+      } catch (error) {
+        if (!canApplySessionResult(target.id, sessionGeneration)) {
+          return;
+        }
+
+        const normalized = normalizeOpenError(error, "打开 SSH 会话失败");
+        setSessionStatus(target.id, "failed", normalized.reason);
+      } finally {
+        endConnecting(target.connectionId);
+        const hasSession = useWorkspaceStore
+          .getState()
+          .sessions.some((session) => session.id === target.id);
+        if (!hasSession) {
+          clearSessionTracking(target.id);
+        }
+      }
     },
-    [cancelSessionGeneration, clearSessionTracking, closeSessionSilently, removeSession, startSession]
+    [
+      beginConnecting,
+      canApplySessionResult,
+      clearSessionTracking,
+      closeSessionSilently,
+      endConnecting,
+      finalizeRetriedSession,
+      nextSessionGeneration,
+      setActiveConnection,
+      setActiveSession,
+      setSessionStatus
+    ]
   );
 
   useEffect(() => {

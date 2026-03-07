@@ -272,6 +272,8 @@ export interface CommandHistoryEntry {
   lastUsedAt: string;
 }
 
+export const MAX_COMMAND_HISTORY_ENTRIES = 500;
+
 export interface SavedCommand {
   id: string;
   name: string;
@@ -331,6 +333,10 @@ export interface AppPreferences {
     backgroundImagePath: string;
     /** APP 背景整体透明度（30-80） */
     backgroundOpacity: number;
+    /** 左侧工作区边栏默认是否折叠 */
+    leftSidebarDefaultCollapsed: boolean;
+    /** 底部工作台默认是否折叠 */
+    bottomWorkbenchDefaultCollapsed: boolean;
   };
   traceroute: {
     /** nexttrace 可执行文件路径，留空表示从 PATH 查找 */
@@ -355,6 +361,8 @@ export interface AppPreferences {
     powProvider: "api.nxtrace.org" | "sakura";
   };
   audit: {
+    /** 是否启用审计日志记录 */
+    enabled: boolean;
     /** 审计日志保留天数，0 表示永不清理 */
     retentionDays: number;
   };
@@ -399,6 +407,8 @@ export interface AppPreferencesPatch {
     confirmBeforeClose?: boolean;
     backgroundImagePath?: string;
     backgroundOpacity?: number;
+    leftSidebarDefaultCollapsed?: boolean;
+    bottomWorkbenchDefaultCollapsed?: boolean;
   };
   traceroute?: {
     nexttracePath?: string;
@@ -413,6 +423,7 @@ export interface AppPreferencesPatch {
     powProvider?: "api.nxtrace.org" | "sakura";
   };
   audit?: {
+    enabled?: boolean;
     retentionDays?: number;
   };
 }
@@ -540,7 +551,9 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     minimizeToTray: false,
     confirmBeforeClose: true,
     backgroundImagePath: "",
-    backgroundOpacity: 60
+    backgroundOpacity: 60,
+    leftSidebarDefaultCollapsed: false,
+    bottomWorkbenchDefaultCollapsed: false
   },
   traceroute: {
     nexttracePath: "",
@@ -555,6 +568,7 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     powProvider: "api.nxtrace.org"
   },
   audit: {
+    enabled: false,
     retentionDays: 7
   }
 };

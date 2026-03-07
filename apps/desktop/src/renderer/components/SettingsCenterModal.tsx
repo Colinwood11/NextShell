@@ -4,6 +4,7 @@ import {
   App as AntdApp,
   Badge,
   Button,
+  Checkbox,
   Input,
   InputNumber,
   List,
@@ -19,6 +20,7 @@ import {
   Tooltip,
   Typography
 } from "antd";
+import { AuditRetentionDaysInput } from "./AuditRetentionDaysInput";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import type { BackupArchiveMeta, WindowAppearance } from "@nextshell/core";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
@@ -205,7 +207,9 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     preferences.backup.defaultRestoreConflictPolicy
   );
 
+  const [auditEnabled, setAuditEnabled] = useState(preferences.audit.enabled);
   const [auditRetentionDays, setAuditRetentionDays] = useState(preferences.audit.retentionDays);
+  const [clearingAuditLogs, setClearingAuditLogs] = useState(false);
 
   const [pwdStatus, setPwdStatus] = useState<{
     isSet: boolean; isUnlocked: boolean; keytarAvailable: boolean;
@@ -214,6 +218,11 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [pwdInput, setPwdInput] = useState("");
   const [pwdConfirm, setPwdConfirm] = useState("");
   const [pwdBusy, setPwdBusy] = useState(false);
+  const [changeOldPwd, setChangeOldPwd] = useState("");
+  const [changeNewPwd, setChangeNewPwd] = useState("");
+  const [changeConfirmPwd, setChangeConfirmPwd] = useState("");
+  const [changeAckRisk, setChangeAckRisk] = useState(false);
+  const [changeBusy, setChangeBusy] = useState(false);
 
   const [backupRunning, setBackupRunning] = useState(false);
   const [archiveList, setArchiveList] = useState<BackupArchiveMeta[]>([]);
@@ -244,6 +253,12 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     setNexttracePath(preferences.traceroute.nexttracePath);
     setBackupConflictPolicy(preferences.backup.defaultBackupConflictPolicy);
     setRestoreConflictPolicy(preferences.backup.defaultRestoreConflictPolicy);
+    setAuditEnabled(preferences.audit.enabled);
+    setAuditRetentionDays(preferences.audit.retentionDays);
+    setChangeOldPwd("");
+    setChangeNewPwd("");
+    setChangeConfirmPwd("");
+    setChangeAckRisk(false);
   }, [open, preferences]);
 
   useEffect(() => {
@@ -340,6 +355,53 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     }
   };
 
+  const handleChangePassword = async (): Promise<void> => {
+    if (!changeOldPwd) {
+      message.warning("请输入原密码。");
+      return;
+    }
+    if (!changeNewPwd || changeNewPwd.length < 6) {
+      message.warning("新密码至少需要 6 个字符。");
+      return;
+    }
+    if (changeNewPwd !== changeConfirmPwd) {
+      message.warning("两次输入的新密码不一致。");
+      return;
+    }
+    if (!changeAckRisk) {
+      message.warning("请先确认已知晓修改主密码对云存档的影响。");
+      return;
+    }
+
+    const sameAsOld = changeOldPwd === changeNewPwd;
+    if (sameAsOld) {
+      message.warning("新密码与原密码相同，将按原密码重新设置。");
+    }
+
+    setChangeBusy(true);
+    try {
+      await window.nextshell.masterPassword.changePassword({
+        oldPassword: changeOldPwd,
+        newPassword: changeNewPwd,
+        confirmPassword: changeConfirmPwd
+      });
+      if (sameAsOld) {
+        message.success("主密码已更新（与原密码相同）。");
+      } else {
+        message.success("主密码已修改。旧云存档可能无法还原，请重新备份。");
+      }
+      setChangeOldPwd("");
+      setChangeNewPwd("");
+      setChangeConfirmPwd("");
+      setChangeAckRisk(false);
+      await refreshPasswordStatus();
+    } catch (error) {
+      message.error(`修改主密码失败：${formatErrorMessage(error, "请检查输入内容")}`);
+    } finally {
+      setChangeBusy(false);
+    }
+  };
+
   const handleRunBackup = async (): Promise<void> => {
     setBackupRunning(true);
     try {
@@ -380,6 +442,31 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     });
   };
 
+  const handleClearAuditLogs = useCallback((): void => {
+    modal.confirm({
+      title: "清空审计日志",
+      content: "这会永久删除本地审计日志历史，无法恢复。确定继续？",
+      okText: "确认清空",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setClearingAuditLogs(true);
+        try {
+          const result = await window.nextshell.audit.clear();
+          if (result.deleted > 0) {
+            message.success(`已清空 ${result.deleted} 条审计日志。`);
+          } else {
+            message.success("没有可清空的审计日志。");
+          }
+        } catch (error) {
+          message.error(`清空审计日志失败：${formatErrorMessage(error, "请稍后重试")}`);
+        } finally {
+          setClearingAuditLogs(false);
+        }
+      }
+    });
+  }, [message, modal]);
+
   // ─── Memoized section content ───────────────────────────────────────
   const sectionContent = useMemo(() => {
     switch (activeSection) {
@@ -390,15 +477,29 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           pwdInput={pwdInput}
           pwdConfirm={pwdConfirm}
           pwdBusy={pwdBusy}
+          changeOldPwd={changeOldPwd}
+          changeNewPwd={changeNewPwd}
+          changeConfirmPwd={changeConfirmPwd}
+          changeAckRisk={changeAckRisk}
+          changeBusy={changeBusy}
           backupRememberPassword={preferences.backup.rememberPassword}
           loading={loading}
+          auditEnabled={auditEnabled}
           auditRetentionDays={auditRetentionDays}
+          clearingAuditLogs={clearingAuditLogs}
+          setAuditEnabled={setAuditEnabled}
           setAuditRetentionDays={setAuditRetentionDays}
           setPwdInput={setPwdInput}
           setPwdConfirm={setPwdConfirm}
+          setChangeOldPwd={setChangeOldPwd}
+          setChangeNewPwd={setChangeNewPwd}
+          setChangeConfirmPwd={setChangeConfirmPwd}
+          setChangeAckRisk={setChangeAckRisk}
           onSetPassword={() => void handleSetPassword()}
           onUnlockPassword={() => void handleUnlockPassword()}
+          onChangePassword={() => void handleChangePassword()}
           onClearRemembered={() => void handleClearRemembered()}
+          onClearAuditLogs={handleClearAuditLogs}
           save={save}
         />;
       case "window":
@@ -407,6 +508,8 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           appearance={preferences.window.appearance}
           minimizeToTray={preferences.window.minimizeToTray}
           confirmBeforeClose={preferences.window.confirmBeforeClose}
+          leftSidebarDefaultCollapsed={preferences.window.leftSidebarDefaultCollapsed}
+          bottomWorkbenchDefaultCollapsed={preferences.window.bottomWorkbenchDefaultCollapsed}
           save={save}
         />;
 
@@ -508,6 +611,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     appBackgroundImagePath, nexttracePath,
     backupRemotePath, rclonePath, backupConflictPolicy, restoreConflictPolicy,
     pwdStatus, pwdStatusLoading, pwdInput, pwdConfirm, pwdBusy,
+    changeOldPwd, changeNewPwd, changeConfirmPwd, changeAckRisk, changeBusy,
     backupRunning, archiveList, archiveListVisible, archiveListLoading, restoring,
     save, pickDirectory, message, modal,
   ]);
@@ -556,12 +660,20 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
 // ═══════════════════════════════════════════════════════════════════════
 
 const WindowSection = ({
-  loading, appearance, minimizeToTray, confirmBeforeClose, save,
+  loading,
+  appearance,
+  minimizeToTray,
+  confirmBeforeClose,
+  leftSidebarDefaultCollapsed,
+  bottomWorkbenchDefaultCollapsed,
+  save,
 }: {
   loading: boolean;
   appearance: WindowAppearance;
   minimizeToTray: boolean;
   confirmBeforeClose: boolean;
+  leftSidebarDefaultCollapsed: boolean;
+  bottomWorkbenchDefaultCollapsed: boolean;
   save: (patch: Record<string, unknown>) => void;
 }) => (
   <>
@@ -600,6 +712,21 @@ const WindowSection = ({
           关闭按钮将隐藏窗口到系统托盘；可从托盘菜单中退出应用。
         </div>
       )}
+    </SettingsCard>
+
+    <SettingsCard title="工作区布局" description="默认值仅在首次使用或无历史折叠状态时生效">
+      <SettingsSwitchRow
+        label="左侧栏默认折叠"
+        checked={leftSidebarDefaultCollapsed}
+        disabled={loading}
+        onChange={(value) => save({ window: { leftSidebarDefaultCollapsed: value } })}
+      />
+      <SettingsSwitchRow
+        label="底部工作区默认折叠"
+        checked={bottomWorkbenchDefaultCollapsed}
+        disabled={loading}
+        onChange={(value) => save({ window: { bottomWorkbenchDefaultCollapsed: value } })}
+      />
     </SettingsCard>
   </>
 );
@@ -1811,10 +1938,12 @@ const BackupSection = ({
 
 const SecuritySection = ({
   pwdStatus, pwdStatusLoading, pwdInput, pwdConfirm, pwdBusy,
+  changeOldPwd, changeNewPwd, changeConfirmPwd, changeAckRisk, changeBusy,
   backupRememberPassword, loading,
-  auditRetentionDays, setAuditRetentionDays,
+  auditEnabled, auditRetentionDays, clearingAuditLogs, setAuditEnabled, setAuditRetentionDays,
   setPwdInput, setPwdConfirm,
-  onSetPassword, onUnlockPassword, onClearRemembered,
+  setChangeOldPwd, setChangeNewPwd, setChangeConfirmPwd, setChangeAckRisk,
+  onSetPassword, onUnlockPassword, onChangePassword, onClearRemembered, onClearAuditLogs,
   save,
 }: {
   pwdStatus: { isSet: boolean; isUnlocked: boolean; keytarAvailable: boolean };
@@ -1822,15 +1951,29 @@ const SecuritySection = ({
   pwdInput: string;
   pwdConfirm: string;
   pwdBusy: boolean;
+  changeOldPwd: string;
+  changeNewPwd: string;
+  changeConfirmPwd: string;
+  changeAckRisk: boolean;
+  changeBusy: boolean;
   backupRememberPassword: boolean;
   loading: boolean;
+  auditEnabled: boolean;
   auditRetentionDays: number;
+  clearingAuditLogs: boolean;
+  setAuditEnabled: (v: boolean) => void;
   setAuditRetentionDays: (v: number) => void;
   setPwdInput: (v: string) => void;
   setPwdConfirm: (v: string) => void;
+  setChangeOldPwd: (v: string) => void;
+  setChangeNewPwd: (v: string) => void;
+  setChangeConfirmPwd: (v: string) => void;
+  setChangeAckRisk: (v: boolean) => void;
   onSetPassword: () => void;
   onUnlockPassword: () => void;
+  onChangePassword: () => void;
   onClearRemembered: () => void;
+  onClearAuditLogs: () => void;
   save: (patch: Record<string, unknown>) => void;
 }) => (
   <>
@@ -1896,25 +2039,95 @@ const SecuritySection = ({
       disabled={loading || !pwdStatus.keytarAvailable}
       onChange={(v) => save({ backup: { rememberPassword: v } })}
     />
+
+    {pwdStatus.isSet && (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed var(--border)" }}>
+        <Typography.Text style={{ fontSize: 12, fontWeight: 600 }}>
+          修改主密码
+        </Typography.Text>
+        <div className="stg-note" style={{ marginTop: 4 }}>
+          修改后旧云存档可能无法还原，建议尽快重新备份。
+        </div>
+
+        <SettingsRow label="原密码">
+          <Input.Password
+            value={changeOldPwd}
+            onChange={(e) => setChangeOldPwd(e.target.value)}
+            placeholder="请输入当前主密码"
+            disabled={changeBusy}
+          />
+        </SettingsRow>
+
+        <SettingsRow label="新密码">
+          <Input.Password
+            value={changeNewPwd}
+            onChange={(e) => setChangeNewPwd(e.target.value)}
+            placeholder="请输入新主密码（至少 6 个字符）"
+            disabled={changeBusy}
+          />
+        </SettingsRow>
+
+        <SettingsRow label="确认新密码">
+          <Input.Password
+            value={changeConfirmPwd}
+            onChange={(e) => setChangeConfirmPwd(e.target.value)}
+            placeholder="请再次输入新主密码"
+            disabled={changeBusy}
+          />
+        </SettingsRow>
+
+        <div style={{ marginTop: 8 }}>
+          <Checkbox
+            checked={changeAckRisk}
+            disabled={changeBusy}
+            onChange={(e) => setChangeAckRisk(e.target.checked)}
+          >
+            我已知晓修改后旧云存档可能无法还原，需要重新备份。
+          </Checkbox>
+        </div>
+
+        <Space style={{ marginTop: 8 }}>
+          <Button type="primary" loading={changeBusy} onClick={onChangePassword}>
+            修改主密码
+          </Button>
+        </Space>
+      </div>
+    )}
   </SettingsCard>
 
-  <SettingsCard title="审计日志" description="设置操作日志的自动清理策略">
+  <SettingsCard title="审计日志" description="默认关闭，仅在你明确启用后才记录新的操作日志">
+    <SettingsSwitchRow
+      label="启用审计日志"
+      hint="切换结果在下次启动应用后生效"
+      checked={auditEnabled}
+      disabled={loading}
+      onChange={(value) => {
+        setAuditEnabled(value);
+        save({ audit: { enabled: value } });
+      }}
+    />
     <SettingsRow label="日志保留天数" hint="设为 0 表示永不清理">
-      <InputNumber
-        min={0} max={365} precision={0}
+      <AuditRetentionDaysInput
         value={auditRetentionDays}
-        disabled={loading}
-        onChange={(v) => {
-          if (typeof v === "number" && v >= 0 && v <= 365) {
-            setAuditRetentionDays(v);
-            save({ audit: { retentionDays: v } });
-          }
+        disabled={loading || !auditEnabled}
+        onChange={(value) => {
+          setAuditRetentionDays(value);
+          save({ audit: { retentionDays: value } });
         }}
-        addonAfter="天"
       />
     </SettingsRow>
+    <SettingsRow label="历史日志">
+      <Button danger loading={clearingAuditLogs} disabled={loading || clearingAuditLogs} onClick={onClearAuditLogs}>
+        清空审计日志
+      </Button>
+    </SettingsRow>
     <div className="stg-note">
-      超过保留天数的审计日志将在应用启动时自动清理。审计日志不包含在云同步备份中。
+      {auditEnabled
+        ? "审计日志已设为启用。新设置会在下次启动后开始生效，超过保留天数的日志会在启动时自动清理。"
+        : "审计日志当前未启用，不会新增记录。历史日志仍可查看和清空，保留天数仅用于启动时清理旧记录。"}
+    </div>
+    <div className="stg-note">
+      审计日志不包含在云同步备份中。
     </div>
   </SettingsCard>
   </>
