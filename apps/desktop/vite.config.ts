@@ -6,6 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import electron from "vite-plugin-electron/simple";
 import { defineConfig, type Plugin } from "vite";
+import { isMainExternal } from "./src/main/external-modules";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -133,23 +134,7 @@ export default defineConfig({
                 chunkFileNames: "main/[name].js",
                 assetFileNames: "main/[name].[ext]"
               },
-              external: (id) =>
-                id === "ssh2" ||
-                id.startsWith("ssh2/") ||
-                id.includes("/ssh2/") ||
-                id === "node-pty" ||
-                id.startsWith("node-pty/") ||
-                id.includes("/node-pty/") ||
-                id === "better-sqlite3" ||
-                id.startsWith("better-sqlite3/") ||
-                id.includes("/better-sqlite3/") ||
-                id === "electron-log" ||
-                id.startsWith("electron-log/") ||
-                id.includes("/electron-log/") ||
-                id === "keytar" ||
-                id.startsWith("keytar/") ||
-                id.includes("/keytar/") ||
-                id.endsWith(".node")
+              external: isMainExternal
             }
           }
         }

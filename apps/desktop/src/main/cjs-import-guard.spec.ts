@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { MAIN_EXTERNAL_MODULES } from "./external-modules";
 
 /**
  * 主进程打包成 ESM。从 CommonJS 依赖里做具名值导入时，Node 的 ESM loader 靠 cjs-module-lexer
@@ -17,8 +18,6 @@ import { describe, expect, test } from "vitest";
  * 探不到时正确的写法是 `createRequire(import.meta.url)`，见 `packages/ssh/src/index.ts` 的
  * `loadSsh2` 与 `packages/ssh/src/key-material.ts` 的 `loadSsh2Utils`。
  */
-const CJS_NATIVE_MODULES = ["ssh2", "better-sqlite3", "keytar", "node-pty", "socks"];
-
 // apps/desktop/src/main → 仓库根
 const REPO_ROOT = join(import.meta.dirname, "../../../..");
 const ROOTS = [join(REPO_ROOT, "apps/desktop/src"), join(REPO_ROOT, "packages")];
@@ -41,10 +40,14 @@ const collectSourceFiles = (dir: string): string[] => {
   return out;
 };
 
-/** 收集 `import { a, b as c } from "<module>"` 里的具名绑定；`import type` 会被擦除，跳过。 */
+/**
+ * 收集 `import { a, b as c } from "<module>[/subpath]"` 里的具名绑定，键为 `specifier\0name`；
+ * `import type` 会被擦除，跳过。
+ */
 const collectNamedImports = (moduleName: string): Map<string, string[]> => {
+  const escaped = moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    String.raw`import\s+(?!type\b)\{([^}]*)\}\s*from\s*["']${moduleName}["']`,
+    String.raw`import\s+(?!type\b)\{([^}]*)\}\s*from\s*["'](${escaped}(?:/[^"']*)?)["']`,
     "g"
   );
   const byName = new Map<string, string[]>();
@@ -63,9 +66,10 @@ const collectNamedImports = (moduleName: string): Map<string, string[]> => {
         if (!imported || imported.startsWith("type ")) {
           continue;
         }
-        const files = byName.get(imported) ?? [];
+        const key = `${match[2]}\0${imported}`;
+        const files = byName.get(key) ?? [];
         files.push(file.replace(REPO_ROOT, ""));
-        byName.set(imported, files);
+        byName.set(key, files);
       }
     }
   }
@@ -94,11 +98,12 @@ const probeNamedExport = (moduleName: string, exportName: string): ProbeResult =
 };
 
 describe("CommonJS named imports resolve under the ESM loader", () => {
-  test.each(CJS_NATIVE_MODULES)("%s", (moduleName) => {
+  test.each(MAIN_EXTERNAL_MODULES)("%s", (moduleName) => {
     const used = collectNamedImports(moduleName);
     const missing = [...used.entries()]
-      .filter(([name]) => probeNamedExport(moduleName, name) === "missing")
-      .map(([name, files]) => `${name} (${files.join(", ")})`);
+      .map(([key, files]) => [...key.split("\0"), files] as [string, string, string[]])
+      .filter(([specifier, name]) => probeNamedExport(specifier, name) === "missing")
+      .map(([specifier, name, files]) => `${name} from ${specifier} (${files.join(", ")})`);
 
     expect(
       missing,
