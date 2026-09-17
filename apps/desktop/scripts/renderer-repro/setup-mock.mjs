@@ -10,7 +10,7 @@
 // with an in-page fake shell that echoes input, understands `seq N`, and emits
 // OSC 133 / OSC 7 like a shell-integration-enabled remote.
 //
-// See RENDERER_PLAYWRIGHT_REPRO.md at the repo root for the full workflow.
+// See docs/RENDERER_PLAYWRIGHT_REPRO.md for the full workflow.
 async (page) => {
   const errors = [];
   page.on("pageerror", (err) => errors.push(`[pageerror] ${err.message}\n${err.stack ?? ""}`));

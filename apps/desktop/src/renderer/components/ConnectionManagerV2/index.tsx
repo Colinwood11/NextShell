@@ -176,6 +176,9 @@ export const ConnectionManagerV2 = ({
    * 所有会让编辑器卸载/换目标的路径都必须先过它——否则填了一半的表单就静默没了。
    */
   const confirmDiscardEdits = useCallback(async (): Promise<boolean> => {
+    if (savingRef.current) {
+      return false;
+    }
     if (!shouldConfirmDiscard(editing, dirtyRef.current)) {
       return true;
     }
@@ -261,13 +264,16 @@ export const ConnectionManagerV2 = ({
     message,
     onConnectionsImported: onReloadConnections
   });
-  const onOpenBatchAuth = useCallback((connectionIds: string[]) => {
-    setBatchAuthTarget({
-      type: "connections",
-      connectionIds,
-      label: `选中的 ${connectionIds.length} 个连接`
-    });
-  }, []);
+  const onOpenBatchAuth = useCallback(
+    (connectionIds: string[], label = `选中的 ${connectionIds.length} 个连接`) => {
+      void leaveEditBeforeMutating(connectionIds).then((ok) => {
+        if (ok) {
+          setBatchAuthTarget({ type: "connections", connectionIds, label });
+        }
+      });
+    },
+    [leaveEditBeforeMutating]
+  );
   const scope = useManagerScope({ open, onError: notifyError });
 
   const dialogSize = useMemo(
@@ -365,12 +371,16 @@ export const ConnectionManagerV2 = ({
       // 于是这条对账每跑一次就白白重渲一遍中栏——而它跟着每次分段变化都要跑。
       return next.length === previous.length ? previous : next;
     });
-    setDetail((previous) =>
-      previous.kind === "view" && !visibleIds.has(previous.connection.id)
-        ? { kind: "empty" }
-        : previous
-    );
-  }, [gridConnectionIds]);
+    setDetail((previous) => {
+      if (previous.kind !== "view") {
+        return previous;
+      }
+      const connection = connections.find((item) => item.id === previous.connection.id);
+      return connection && visibleIds.has(connection.id)
+        ? { kind: "view", connection }
+        : { kind: "empty" };
+    });
+  }, [connections, gridConnectionIds]);
 
   const folderLabel = useMemo(() => {
     const target = detail.kind === "view" ? detail.connection.folderId : undefined;
@@ -421,6 +431,9 @@ export const ConnectionManagerV2 = ({
 
   const handleSubmit = useCallback(
     async (values: ConnectionEditorValues, intent: ConnectionEditorSubmitIntent) => {
+      if (savingRef.current) {
+        return;
+      }
       startSaving(true);
       try {
         const host = (values.host ?? "").trim();
@@ -462,6 +475,7 @@ export const ConnectionManagerV2 = ({
 
   const handleDelete = useCallback(
     (ids: string[]) => {
+      const removed = new Set<string>();
       modal.confirm({
         title: "确认删除",
         content: `删除${describeAffected(ids, scopedConnections)}后会关闭相关会话。删除的连接会进入回收站。`,
@@ -471,18 +485,23 @@ export const ConnectionManagerV2 = ({
         onOk: async () => {
           try {
             for (const id of ids) {
+              if (removed.has(id)) {
+                continue;
+              }
               await window.nextshell.connection.remove({ id });
-            }
-            await onReloadConnections();
-            // 只摘掉被删的那几个：整体清空会把"删 A 时正好选中/正在编辑 B"一起清掉，
-            // B 的编辑器就这么没了，而用户只是删了另一条。
-            const removed = new Set(ids);
-            setSelectedIds((previous) => previous.filter((id) => !removed.has(id)));
-            if (affectsDetailConnection(detailConnectionId(detailRef.current), ids)) {
-              openDetail({ kind: "empty" });
+              removed.add(id);
             }
           } catch (error) {
             message.error(`删除失败：${formatErrorMessage(error, "请稍后重试")}`);
+            throw error;
+          } finally {
+            // 只摘掉被删的那几个：整体清空会把"删 A 时正好选中/正在编辑 B"一起清掉，
+            // B 的编辑器就这么没了，而用户只是删了另一条。
+            setSelectedIds((previous) => previous.filter((id) => !removed.has(id)));
+            if (affectsDetailConnection(detailConnectionId(detailRef.current), [...removed])) {
+              openDetail({ kind: "empty" });
+            }
+            await onReloadConnections();
           }
         }
       });
@@ -680,17 +699,31 @@ export const ConnectionManagerV2 = ({
         cancelText: "取消",
         okButtonProps: { danger: true },
         onOk: async () => {
+          const affectedIds = scopedConnections
+            .filter((connection) => connection.folderId === folder.id)
+            .map((connection) => connection.id);
+          if (!(await leaveEditBeforeMutating(affectedIds))) {
+            return Promise.reject(new Error("已取消删除目录"));
+          }
           try {
             await window.nextshell.connectionFolder.remove({ id: folder.id });
             await scope.reloadFolders();
             await onReloadConnections();
           } catch (error) {
             message.error(`删除目录失败：${formatErrorMessage(error, "请稍后重试")}`);
+            throw error;
           }
         }
       });
     },
-    [message, modal, onReloadConnections, scope.reloadFolders]
+    [
+      leaveEditBeforeMutating,
+      message,
+      modal,
+      onReloadConnections,
+      scope.reloadFolders,
+      scopedConnections
+    ]
   );
 
   const handleMoveFolder = useCallback(
@@ -810,13 +843,9 @@ export const ConnectionManagerV2 = ({
         message.info(`目录「${folder.name}」下没有连接`);
         return;
       }
-      setBatchAuthTarget({
-        type: "connections",
-        connectionIds: ids,
-        label: `目录「${folder.name}」下的 ${ids.length} 个连接`
-      });
+      onOpenBatchAuth(ids, `目录「${folder.name}」下的 ${ids.length} 个连接`);
     },
-    [message, scope.folders, scopedConnections]
+    [message, onOpenBatchAuth, scope.folders, scopedConnections]
   );
 
   const handleFolderContextMenu = useCallback(

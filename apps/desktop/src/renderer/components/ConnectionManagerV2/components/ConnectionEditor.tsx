@@ -139,7 +139,7 @@ export const ConnectionEditor = ({
         username: connection?.username ?? "",
         authType: connection?.authType ?? CONNECTION_EDITOR_DEFAULT_VALUES.authType,
         sshKeyId: connection?.sshKeyId,
-        folderId: connection?.folderId ?? currentFolderId,
+        folderId: connection ? connection.folderId : currentFolderId,
         hostFingerprint: connection?.hostFingerprint,
         strictHostKeyChecking:
           connection?.strictHostKeyChecking ??
@@ -239,6 +239,9 @@ export const ConnectionEditor = ({
         focusFirstError(info.errorFields);
       }}
     >
+      <Form.Item name="id" hidden>
+        <Input />
+      </Form.Item>
       <div className="cm2-editor-body">
         <Form.Item label="名称" name="name">
           <Input placeholder="留空则使用 host:port" autoFocus />
@@ -340,6 +343,7 @@ export const ConnectionEditor = ({
         </Form.Item>
 
         <Collapse
+          // 未展开的配置也必须注册，校验/提交才能保留它们。
           ghost
           size="small"
           className="cm2-editor-sections"
@@ -348,6 +352,7 @@ export const ConnectionEditor = ({
           items={[
             {
               key: "security",
+              forceRender: true,
               label: "安全",
               children: (
                 <>
@@ -366,6 +371,7 @@ export const ConnectionEditor = ({
             },
             {
               key: "network",
+              forceRender: true,
               label: "网络",
               children: (
                 <>
@@ -387,6 +393,7 @@ export const ConnectionEditor = ({
             },
             {
               key: "terminal",
+              forceRender: true,
               label: "终端",
               children: (
                 <>
@@ -425,6 +432,7 @@ export const ConnectionEditor = ({
             },
             {
               key: "meta",
+              forceRender: true,
               label: "标签",
               children: (
                 <>

@@ -33,6 +33,12 @@ export const PointerMenu = ({ x, y, items, onClose }: PointerMenuProps) => {
     onClick: ({ key }) => {
       onClose();
       items.find((item) => item.key === key)?.onSelect();
+    },
+    onKeyDown: (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
     }
   };
 
@@ -40,7 +46,8 @@ export const PointerMenu = ({ x, y, items, onClose }: PointerMenuProps) => {
     <Dropdown
       open
       menu={menu}
-      trigger={[]}
+      trigger={["click"]}
+      autoFocus
       onOpenChange={(open) => {
         if (!open) {
           onClose();
@@ -49,7 +56,8 @@ export const PointerMenu = ({ x, y, items, onClose }: PointerMenuProps) => {
       placement="bottomLeft"
     >
       <span
-        style={{ position: "fixed", left: x, top: y, width: 0, height: 0, pointerEvents: "none" }}
+        // rc-trigger skips alignment for an invisible (zero-sized, fixed) target.
+        style={{ position: "fixed", left: x, top: y, width: 1, height: 1, pointerEvents: "none" }}
       />
     </Dropdown>
   );

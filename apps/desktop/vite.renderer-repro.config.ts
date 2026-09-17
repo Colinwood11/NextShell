@@ -1,7 +1,7 @@
 // Renderer-only dev server for browser-based bug reproduction (no Electron).
 // Mirrors vite.config.ts minus the electron plugin, so `window.nextshell` is
 // absent and must be mocked before the page loads — see
-// scripts/renderer-repro/ and RENDERER_PLAYWRIGHT_REPRO.md at the repo root.
+// scripts/renderer-repro/ and docs/RENDERER_PLAYWRIGHT_REPRO.md.
 //
 // Usage (from apps/desktop):  pnpm exec vite --config vite.renderer-repro.config.ts
 import path from "node:path";
