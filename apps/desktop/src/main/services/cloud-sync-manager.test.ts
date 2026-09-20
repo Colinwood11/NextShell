@@ -37,6 +37,12 @@ const createDeps = (
   listConnections: (): ConnectionProfile[] => [],
   saveConnection: (_conn): void => undefined,
   removeConnection: (_id): void => undefined,
+  listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  createConnectionFolder: ({ name, parentId }) => ({
+    id: `test-folder-${name}`,
+    name,
+    parentId
+  }),
   listSshKeys: (): SshKeyProfile[] => [],
   saveSshKey: (_key): void => undefined,
   removeSshKey: (_id): void => undefined,
@@ -137,6 +143,12 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
   removeConnection: (id): void => {
     state.connections = state.connections.filter((item) => item.id !== id);
   },
+  listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  createConnectionFolder: ({ name, parentId }) => ({
+    id: `test-folder-${name}`,
+    name,
+    parentId
+  }),
   listSshKeys: (): SshKeyProfile[] => state.sshKeys,
   saveSshKey: (key): void => {
     state.sshKeys = [...state.sshKeys.filter((item) => item.id !== key.id), key];
@@ -848,13 +860,18 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
       originWorkspaceId: workspace.id
     } as ConnectionProfile;
     const state = createMutableState(workspace, { connections: [existing] });
-    const manager = new CloudSyncManager(createMutableDeps(state));
+    const deps = createMutableDeps(state);
+    deps.listConnectionFolders = () => [{ id: "folder-asia", name: "asia" }];
+    const manager = new CloudSyncManager(deps);
 
     await (manager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }).applyWorkspaceSnapshot(
       workspace,
       "workspace-password",
       repoSnapshot(workspace.id, "remote-snapshot", [
-        snapshotConnection("conn-1", "Prod", "new.example.com")
+        {
+          ...snapshotConnection("conn-1", "Prod", "new.example.com"),
+          groupPath: "/workspace/prod-team/asia"
+        }
       ])
     );
 

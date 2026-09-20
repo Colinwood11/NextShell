@@ -564,7 +564,7 @@ export const createServiceContainer = async (
     ensureConnection,
     listWorkspaces: () => connections.listCloudSyncWorkspaces(),
     markWorkspaceCommandsDirty: (workspaceId) => {
-      cloudSyncManager?.markWorkspaceCommandsDirty(workspaceId);
+      cloudSyncManager?.markWorkspaceDirty(workspaceId);
     }
   });
 
