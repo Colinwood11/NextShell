@@ -1180,10 +1180,7 @@ export class CloudSyncManager {
     }
   }
 
-  private materializeConnectionFolder(
-    scopeKey: string,
-    groupPath: string
-  ): string | undefined {
+  private materializeConnectionFolder(scopeKey: string, groupPath: string): string | undefined {
     const folders = this.deps.listConnectionFolders(scopeKey);
     let parentId: string | undefined;
     for (const name of parseGroupPathSegments(groupPath, { stripWirePrefix: true })) {
