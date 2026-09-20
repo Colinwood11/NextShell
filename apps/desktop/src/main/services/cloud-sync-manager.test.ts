@@ -879,6 +879,33 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
     expect(state.connections[0]?.folderId).toBeUndefined();
   });
 
+  test("materializes a remote group path into local folders", async () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const state = createMutableState(workspace);
+    const folders: Array<{ id: string; name: string; parentId?: string }> = [];
+    const deps = createMutableDeps(state);
+    deps.listConnectionFolders = () => folders.map((folder) => ({ ...folder }));
+    deps.createConnectionFolder = ({ name, parentId }) => {
+      const folder = { id: `folder-${folders.length + 1}`, name, parentId };
+      folders.push(folder);
+      return folder;
+    };
+    const manager = new CloudSyncManager(deps);
+    const remoteConnection = {
+      ...snapshotConnection("conn-new", "New", "new.example.com"),
+      groupPath: "/workspace/prod-team/prod/asia"
+    };
+
+    await (manager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }).applyWorkspaceSnapshot(
+      workspace,
+      "workspace-password",
+      repoSnapshot(workspace.id, "remote-snapshot", [remoteConnection])
+    );
+
+    expect(folders.map(({ name }) => name)).toEqual(["prod", "asia"]);
+    expect(state.connections[0]?.folderId).toBe("folder-2");
+  });
+
   test("moves resources deleted remotely into the recycle bin", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
     const existing: ConnectionProfile = {

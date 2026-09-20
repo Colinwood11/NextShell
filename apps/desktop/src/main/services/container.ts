@@ -8,6 +8,7 @@ import type {
   NetworkSnapshot,
   ProcessSnapshot
 } from "../../../../../packages/core/src/index";
+import { buildScopeKey } from "../../../../../packages/core/src/index";
 import {
   DEFAULT_MAX_CHANNELS_PER_CONNECTION,
   SshConnection,
@@ -614,6 +615,8 @@ export const createServiceContainer = async (
     listConnections: () => connections.list({}),
     saveConnection: (conn) => connections.save(conn),
     removeConnection: (id) => connections.remove(id),
+    listConnectionFolders: (scopeKey) => folderRepo.list(scopeKey),
+    createConnectionFolder: (input) => folderRepo.create(input),
     listSshKeys: () => sshKeyRepo.list(),
     saveSshKey: (key) => sshKeyRepo.save(key),
     removeSshKey: (id) => sshKeyRepo.remove(id),
@@ -666,7 +669,20 @@ export const createServiceContainer = async (
   const folderSvc = new ConnectionFolderService({
     folders: folderRepo,
     connections,
-    listCloudWorkspaces: () => cloudSyncManager?.listWorkspaces() ?? []
+    listCloudWorkspaces: () => cloudSyncManager?.listWorkspaces() ?? [],
+    onCloudScopeChanged: (scopeKey) => {
+      const workspace = (cloudSyncManager?.listWorkspaces() ?? []).find(
+        (candidate) =>
+          buildScopeKey({
+            kind: "cloud",
+            apiBaseUrl: candidate.apiBaseUrl,
+            workspaceName: candidate.workspaceName
+          }) === scopeKey
+      );
+      if (workspace) {
+        cloudSyncManager?.markWorkspaceDirty(workspace.id);
+      }
+    }
   });
 
   // Resource Operations Service

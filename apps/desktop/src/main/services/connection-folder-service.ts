@@ -28,6 +28,7 @@ export interface ConnectionFolderServiceOptions {
    * 惰性取:CloudSyncManager 在容器里晚于目录仓储构造。
    */
   listCloudWorkspaces: () => CloudSyncWorkspaceProfile[];
+  onCloudScopeChanged?: (scopeKey: string) => void;
 }
 
 /**
@@ -98,6 +99,7 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
   private reprojectScope(scopeKey: string): void {
     const folders = this.options.folders.list(scopeKey);
     const workspaceName = this.resolveWorkspaceName(scopeKey);
+    let changed = false;
     for (const connection of this.options.connections.list({})) {
       if (resolveOriginScopeKey(connection) !== scopeKey) {
         continue;
@@ -113,6 +115,10 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
         continue;
       }
       this.options.connections.updateConnectionGroupPath(connection.id, nextGroupPath);
+      changed = true;
+    }
+    if (changed && scopeKey !== LOCAL_DEFAULT_SCOPE_KEY) {
+      this.options.onCloudScopeChanged?.(scopeKey);
     }
   }
 

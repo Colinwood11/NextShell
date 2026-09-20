@@ -12,6 +12,7 @@ import type {
   WorkspaceRepoStatus
 } from "@nextshell/core";
 import { buildResourceId, buildScopeKey, LOCAL_DEFAULT_SCOPE_KEY } from "@nextshell/core";
+import { parseGroupPathSegments } from "@nextshell/shared";
 import { decryptWorkspaceSecret, encryptWorkspaceSecret } from "@nextshell/security";
 import { CloudSyncApiV3Client, type CloudSyncApiV3Credentials } from "./cloud-sync-api-v3";
 import {
@@ -55,6 +56,16 @@ export interface CloudSyncManagerDeps {
   listConnections: () => ConnectionProfile[];
   saveConnection: (conn: ConnectionProfile) => void;
   removeConnection: (id: string) => void;
+  listConnectionFolders?: (scopeKey: string) => Array<{
+    id: string;
+    parentId?: string;
+    name: string;
+  }>;
+  createConnectionFolder?: (input: { scopeKey: string; name: string; parentId?: string }) => {
+    id: string;
+    parentId?: string;
+    name: string;
+  };
 
   listSshKeys: () => SshKeyProfile[];
   saveSshKey: (key: SshKeyProfile) => void;
@@ -415,6 +426,10 @@ export class CloudSyncManager {
   }
 
   markWorkspaceCommandsDirty(workspaceId: string): void {
+    this.markWorkspaceDirty(workspaceId);
+  }
+
+  markWorkspaceDirty(workspaceId: string): void {
     void this.syncNow(workspaceId).catch(() => undefined);
   }
 
@@ -830,6 +845,9 @@ export class CloudSyncManager {
       ...this.listWorkspaceConnections(workspaceId).map((item) =>
         fingerprintItem("connection", item.uuidInScope ?? item.id, item.updatedAt)
       ),
+      ...this.listWorkspaceConnections(workspaceId).map((item) =>
+        fingerprintItem("connectionGroup", item.uuidInScope ?? item.id, item.groupPath)
+      ),
       ...this.listWorkspaceSshKeys(workspaceId).map((item) =>
         fingerprintItem("sshKey", item.uuidInScope ?? item.id, item.updatedAt)
       ),
@@ -1100,6 +1118,7 @@ export class CloudSyncManager {
       const credentialRef = password
         ? await this.replaceCredential(existing?.credentialRef, `conn-${localId}`, password)
         : await this.clearCredential(existing?.credentialRef);
+      const groupPath = normalizeWorkspaceGroupPath(workspace.workspaceName, connection.groupPath);
 
       const profile: ConnectionProfile = {
         id: localId,
@@ -1118,11 +1137,10 @@ export class CloudSyncManager {
         terminalEncoding: connection.terminalEncoding,
         backspaceMode: connection.backspaceMode,
         deleteMode: connection.deleteMode,
-        groupPath: normalizeWorkspaceGroupPath(workspace.workspaceName, connection.groupPath),
-        // folderId 不在线协议里,是本地的目录归属。`saveConnection` 是全行 upsert
-        // (`folder_id = connection.folderId ?? null`),这里不兜底的话每次 pull 都会把云连接
-        // 的目录清空,连接在树上掉回根,而 groupPath 还写着目录名——两边直接分叉。
-        folderId: existing?.folderId,
+        groupPath,
+        // folderId 不在线协议里，先按 groupPath 在本地物化目录链，再写入连接归属。
+        // 没有目录仓储时保留已有 folderId，避免旧调用方因缺少目录能力而丢失本地归属。
+        folderId: this.materializeConnectionFolder(scopeKey, groupPath, existing?.folderId),
         tags: [...connection.tags],
         notes: connection.notes,
         favorite: connection.favorite,
@@ -1168,6 +1186,34 @@ export class CloudSyncManager {
       await this.clearCredential(key.passphraseRef);
       this.deps.removeSshKey(key.id);
     }
+  }
+
+  private materializeConnectionFolder(
+    scopeKey: string,
+    groupPath: string,
+    fallbackFolderId: string | undefined
+  ): string | undefined {
+    const listFolders = this.deps.listConnectionFolders;
+    const createFolder = this.deps.createConnectionFolder;
+    if (!listFolders || !createFolder) {
+      return fallbackFolderId;
+    }
+
+    const folders = listFolders(scopeKey);
+    let parentId: string | undefined;
+    for (const name of parseGroupPathSegments(groupPath, { stripWirePrefix: true })) {
+      const existing = folders.find(
+        (folder) => folder.parentId === parentId && folder.name === name
+      );
+      if (existing) {
+        parentId = existing.id;
+        continue;
+      }
+      const created = createFolder({ scopeKey, name, parentId });
+      folders.push(created);
+      parentId = created.id;
+    }
+    return parentId;
   }
 
   private async saveRemoteDeletedConnection(connection: ConnectionProfile): Promise<void> {
