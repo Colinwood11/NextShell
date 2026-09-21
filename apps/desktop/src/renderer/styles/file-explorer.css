@@ -19,15 +19,18 @@
 .fe-tree-panel {
   width: 170px;
   flex-shrink: 0;
+  min-height: 0;
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
   padding: 4px 0;
+  scrollbar-color: var(--border-mid) transparent;
+  scrollbar-width: thin;
 }
 
 .fe-tree-panel::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
 }
 .fe-tree-panel::-webkit-scrollbar-thumb {
   background: var(--border-mid);
