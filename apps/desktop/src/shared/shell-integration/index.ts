@@ -244,9 +244,10 @@ export const buildFileInstallScript = (
 ): string => {
   const dirs = Array.from(new Set(files.map(({ path }) => path.slice(0, path.lastIndexOf("/")))));
   const blocks = files.map(({ path, body: text }) => {
-    // The heredoc delimiter must sit alone on its line, so guarantee a
-    // trailing newline after the script body.
-    const body = text.endsWith("\n") ? text : `${text}\n`;
+    // Remote POSIX scripts must use LF; Windows raw imports may contain CRLF.
+    const normalizedText = text.replace(/\r\n?/g, "\n");
+    // The heredoc delimiter must sit alone on its line.
+    const body = normalizedText.endsWith("\n") ? normalizedText : `${normalizedText}\n`;
     const tempPath = `${path}.$$.tmp`;
     // The heredoc body starts after the *whole* command line, so the `&&`/`||`
     // tail is allowed to sit next to the `<<` redirection. A failed write must

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   SHELL_INTEGRATION_FAMILIES,
   SHELL_INTEGRATION_PROBE_COMMAND,
+  buildFileInstallScript,
   buildInstallCommand,
   buildInstallScript,
   buildManualInstallInstructions,
@@ -141,6 +142,15 @@ describe("buildSourceLine", () => {
 });
 
 describe("buildInstallScript", () => {
+  test("normalizes Windows line endings before writing remote scripts", () => {
+    const script = buildFileInstallScript([
+      { path: "$HOME/.cache/nextshell/script", body: "#!/bin/sh\r\necho ok\r\n" }
+    ]);
+
+    expect(script).toContain("#!/bin/sh\necho ok\n__NEXTSHELL_INTEGRATION_EOF__");
+    expect(script).not.toContain("\r");
+  });
+
   test("creates the cache dir and writes each script through a quoted heredoc", () => {
     const script = buildInstallScript(["zsh"], () => "# script\necho hi\n");
 
