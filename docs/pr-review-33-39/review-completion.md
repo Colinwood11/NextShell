@@ -23,13 +23,13 @@
 
 | PR | 代码状态 | 指南收尾状态 | 关键限制 |
 |---|---|---|---|
-| #33 | 已修复 | 文档待贴回 | 目录不是在线协议字段，跨设备可能残留旧空目录 |
-| #34 | 已撤回相关样式 | 建议关闭 | 根因由 #36 处理 |
-| #35 | 已修复 | 可合并前需更新验证事实 | `.gitattributes` 仅可选 |
-| #36 | 修复已在历史中 | 需拆分重提 | 只保留 `a85bd955`，不要带堆叠 PR |
-| #37 | 已修复 | Electron 已验证；PR body 待更新 | 删除的是本机数据，不删除云端工作区 |
+| #33 | 已修复 | 文档已贴回 | 目录不是在线协议字段，跨设备可能残留旧空目录 |
+| #34 | 已撤回相关样式 | 已关闭 | 根因由 #36 处理 |
+| #35 | 已修复 | body 已更新 | `.gitattributes` 仅可选 |
+| #36 | clean branch 已重提 | body 已更新 | 只保留 `a85bd955`，没有堆叠 PR |
+| #37 | 已修复 | Electron 已验证；body 已更新 | 删除的是本机数据，不删除云端工作区 |
 | #38 | 已修复 | Electron 双击/云作用域已验证；延迟深链由回归测试覆盖 | 需要维护者确认“仅云连接默认首个作用域”产品行为 |
-| #39 | 已修复 | Electron 确认框和多级目录已验证；PR body 待更新 | 子目录会删除，服务器移到原父目录 |
+| #39 | 已修复 | Electron 确认框和多级目录已验证；body 已更新 | 子目录会删除，服务器移到原父目录 |
 
 ## 已完成的自动化验证
 
@@ -52,7 +52,7 @@
 | #38 云作用域 | 真实 Electron 选择云作用域并显示云连接 | `PR UI Cloud` 作用域和云连接可见 | `evidence/38-cloud-scope.png` |
 | #38 延迟深链 | 完整应用 contextBridge 方法为只读；另用真实 Electron Chromium + mock IPC 注入约 400ms 延迟 | 完整应用未做注入；mock harness 深链保持在云目录，回归测试和补充证据均通过 | `evidence/38-cloud-delayed-deep-link.png`, `evidence/renderer-ui-results.json` |
 | #36 SFTP 高度/滚动 | 完整应用连接故意指向不可达测试端口；另用真实 Electron Chromium + mock IPC 检查布局指标 | 完整应用真实 SSH 文件区未验证；mock harness shell/tree 高度链通过 | `evidence/36-sftp-layout-scroll.png`, `evidence/renderer-ui-results.json` |
-| #34 滚动条回退 | 检查最终源码/构建结果 | 已确认相关滚动条改动未保留；#34 待关闭 | `apps/desktop/src/renderer/styles/file-explorer.css` |
+| #34 滚动条回退 | 检查最终源码/构建结果 | 已确认相关滚动条改动未保留；#34 已关闭 | `apps/desktop/src/renderer/styles/file-explorer.css` |
 | #39 删除确认框 | 真实 Electron 多级目录，分别不勾选/勾选 | 文案与行为一致；不勾选移回原父目录，勾选删除并进入回收站 | `evidence/39-folder-confirm-unchecked.png`, `evidence/39-folder-confirm-checked.png` |
 | #37 工作区删除 | 设置页真实删除临时云工作区 | 确认框明确本机范围；删除后 workspace/物化连接/目录均为 0 | `evidence/37-confirm.png`, `evidence/37-removed.png` |
 
