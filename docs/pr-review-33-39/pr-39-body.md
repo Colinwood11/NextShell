@@ -13,5 +13,6 @@
 - `pnpm exec vitest run apps/desktop/src/main/services/connection-folder-service.spec.ts packages/storage/src/connection-folders.test.ts`
 - `pnpm --filter @nextshell/desktop run typecheck`
 - `pnpm --filter @nextshell/storage run typecheck`
-- 多级子目录单测覆盖：`connection-folder-service.spec.ts` 覆盖三层子目录；本次定向管理器/目录/存储测试合计 19 个文件、274 个测试通过。
+- 多级子目录单测覆盖：`connection-folder-service.spec.ts` 覆盖三层子目录；本次定向管理器/目录/存储测试合计 19 个文件、283 个测试通过。
 - 真实 Electron 确认框（2026-10-06，独立临时 userData）：不勾选时子目录删除、连接移到原父目录；勾选时子目录删除、连接走删除 IPC 且回收站计数增加。证据：[不勾选](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-confirm-unchecked.png)、[勾选](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-confirm-checked.png)、[JSON](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/ui-pr-review.json)。
+- 补充 renderer harness 验证了删除失败后的重试 bookkeeping：`removeIds` 为 `A,B,B`，只有失败项再次提交；证据：[部分失败](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-delete-partial-failure.png)、[重试后](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-delete-checked-after-retry.png)。该 harness 使用 mock IPC，不替代完整应用后端运行。

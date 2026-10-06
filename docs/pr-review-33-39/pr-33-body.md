@@ -17,7 +17,7 @@
 ## Validation
 
 - `pnpm exec vitest run apps/desktop/src/main/services/cloud-sync-manager.test.ts apps/desktop/src/main/services/import-export.spec.ts apps/desktop/src/main/services/connection-folder-service.spec.ts packages/storage/src/cached-repository.test.ts packages/storage/src/connection-folders.test.ts`
-- 定向审查回归：19 个文件、274 个测试通过。
+- 定向审查回归：19 个文件、283 个测试通过。
 - `pnpm run typecheck`
 - `pnpm run build`
 - `pnpm exec prettier --check`（变更源码和审查文档）

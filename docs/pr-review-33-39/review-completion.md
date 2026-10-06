@@ -17,7 +17,7 @@
 - [x] #36/#37/#39/#38 已准备从 `upstream/main` 拆分的 clean branch 方案，禁止继续携带 merge 堆叠历史。
 - [x] #35 的 `.gitattributes` 作为可选项不增加。
 - [x] body 只列真实跑过的命令；全量测试的平台/环境失败单独标明。
-- [ ] GitHub PR head/body 更新与 #34 关闭：clean branch 已推送，待本轮 API 操作完成。
+- [x] GitHub PR head/body 更新与 #34 关闭：clean branch 已推送，PR body 已更新，#34 已关闭。
 
 ## 编号状态
 
@@ -35,7 +35,7 @@
 
 以下结果来自当前修复过程，并已写入对应 PR body：
 
-- 定向 Vitest：19 个文件、274 个测试通过；#35 shell integration 单测通过。
+- 定向 Vitest：19 个文件、283 个测试通过；#35 shell integration 单测 21 个通过。
 - `pnpm run typecheck` 通过。
 - 变更文件 Prettier 检查和 `git diff --check` 通过。
 - ESLint 无错误；已有 Hook 依赖警告需原样说明。
@@ -50,11 +50,19 @@
 |---|---|---|---|
 | #38 文件夹双击 | 真实 Electron `locator.dblclick()`，文件夹内两台服务器 | 只进入目录并显示两台服务器，未打开服务器详情/会话 | `evidence/38-folder-dblclick.png` |
 | #38 云作用域 | 真实 Electron 选择云作用域并显示云连接 | `PR UI Cloud` 作用域和云连接可见 | `evidence/38-cloud-scope.png` |
-| #38 延迟深链 | contextBridge 方法为只读，无法安全注入 400ms 延迟 | 未进行真实延迟注入；由 renderer 回归测试覆盖 | `apps/desktop/src/renderer/components/ConnectionManagerV2/components/render.test.tsx` |
-| #36 SFTP 高度/滚动 | 连接故意指向不可达测试端口 | 未验证真实 FileExplorerPane；应用正确显示连接提示 | `evidence/ui-pr-review.json` |
+| #38 延迟深链 | 完整应用 contextBridge 方法为只读；另用真实 Electron Chromium + mock IPC 注入约 400ms 延迟 | 完整应用未做注入；mock harness 深链保持在云目录，回归测试和补充证据均通过 | `evidence/38-cloud-delayed-deep-link.png`, `evidence/renderer-ui-results.json` |
+| #36 SFTP 高度/滚动 | 完整应用连接故意指向不可达测试端口；另用真实 Electron Chromium + mock IPC 检查布局指标 | 完整应用真实 SSH 文件区未验证；mock harness shell/tree 高度链通过 | `evidence/36-sftp-layout-scroll.png`, `evidence/renderer-ui-results.json` |
 | #34 滚动条回退 | 检查最终源码/构建结果 | 已确认相关滚动条改动未保留；#34 待关闭 | `apps/desktop/src/renderer/styles/file-explorer.css` |
 | #39 删除确认框 | 真实 Electron 多级目录，分别不勾选/勾选 | 文案与行为一致；不勾选移回原父目录，勾选删除并进入回收站 | `evidence/39-folder-confirm-unchecked.png`, `evidence/39-folder-confirm-checked.png` |
 | #37 工作区删除 | 设置页真实删除临时云工作区 | 确认框明确本机范围；删除后 workspace/物化连接/目录均为 0 | `evidence/37-confirm.png`, `evidence/37-removed.png` |
+
+另有一组组件级补充验证使用真实 Electron Chromium 和真实鼠标事件，但将 `window.nextshell` 替换为内存 mock，因此不等同于完整打包应用：
+
+- `node apps/desktop/scripts/renderer-repro/check-pr-review-ui.mjs` 通过（`fullApp=false`）。
+- #36 的 SFTP 高度链指标为 shell/tree `520/520`，`display:flex`、`min-height:0`、`overflow:hidden`；证据为 `evidence/36-sftp-layout-scroll.png`。
+- #38 的 400ms 延迟 `workspaceList` 深链保持在 `PR Review Cloud / cloud-folder`；证据为 `evidence/38-cloud-delayed-deep-link.png`。
+- #39 的删除失败后重试只再次提交失败连接（`removeIds` 为 `A,B,B`），证据为 `evidence/39-folder-delete-partial-failure.png`、`39-folder-delete-checked-after-retry.png`。
+- 完整结果保存在 `evidence/renderer-ui-results.json`，其中的 CSP 警告和模拟失败 Promise 是 harness 预期输出。
 
 ## 指南要求分类
 
@@ -68,4 +76,4 @@
 
 ### 当前遗漏或待确认
 
-GitHub PR body/head 更新、#34 关闭和 clean branch 推送仍需在提交阶段完成；#38 的 400ms 延迟深链仍以回归测试为证据，真实 Electron contextBridge 不可安全注入该延迟。
+GitHub PR body/head 已更新，#34 已关闭；完整打包应用中的 #36 真实 SSH 文件区仍未验证，400ms 深链使用 mock harness 补充验证，不能替代真实云端网络运行。
