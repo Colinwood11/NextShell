@@ -17,17 +17,30 @@
   flex-direction: column;
 }
 
-.bottom-workbench .ant-tabs-content-holder {
-  flex: 1;
+/* Ant Design 6 renders body-holder > body > content. Keep every flex item
+   shrinkable so explorer panes can hand the remaining height to their own
+   tree and virtual-table scroll containers. */
+.bottom-workbench .ant-tabs-body-holder {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+}
+
+.bottom-workbench .ant-tabs-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
 }
 
 .bottom-workbench .ant-tabs-content {
-  height: 100%;
-}
-
-.bottom-workbench .ant-tabs-tabpane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   height: 100%;
   overflow: hidden;
 }

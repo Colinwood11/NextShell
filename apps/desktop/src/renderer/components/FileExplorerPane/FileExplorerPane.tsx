@@ -87,7 +87,7 @@ export const FileExplorerPane = memo(function FileExplorerPane({
 
   return (
     <div
-      className={`fe-shell flex h-full overflow-hidden${transfers.dropTargetActive ? " fe-shell--drop-target" : ""}`}
+      className={`fe-shell flex h-full min-h-0 overflow-hidden${transfers.dropTargetActive ? " fe-shell--drop-target" : ""}`}
       onContextMenu={(event) => actions.handleContextMenu(event)}
       onDragEnter={transfers.handleDragEnter}
       onDragOver={transfers.handleDragOver}
@@ -116,7 +116,7 @@ export const FileExplorerPane = memo(function FileExplorerPane({
         />
       </aside>
 
-      <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <section className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
         <FileExplorerToolbar
           pathInput={explorer.pathInput}
           pathName={explorer.pathName}
