@@ -12,7 +12,7 @@ import {
   Typography,
   message
 } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CloudSyncWorkspaceProfile, WorkspaceRepoStatus } from "@nextshell/core";
 import { CLOUD_SYNC_WORKSPACE_PASSWORD_MIN_LENGTH } from "@nextshell/shared";
 import { SettingsCard } from "./SettingsCard";
@@ -74,19 +74,27 @@ export const CloudSyncManagerPanel = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [copyingTokenId, setCopyingTokenId] = useState<string | null>(null);
   const [pastingToken, setPastingToken] = useState(false);
 
   const [statusMap, setStatusMap] = useState<Map<string, WorkspaceStatus>>(new Map());
   const [testing, setTesting] = useState(false);
+  const refreshRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = ++refreshRequestRef.current;
     setLoading(true);
     try {
       const [list, statusResult] = await Promise.all([
         api().cloudSync.workspaceList(),
         api().cloudSync.status()
       ]);
+      // 删除/添加会同时触发状态广播和显式 refresh。旧请求晚返回时不能把
+      // 已删除的工作区重新画回来。
+      if (requestId !== refreshRequestRef.current) {
+        return;
+      }
       setWorkspaces(list);
       const map = new Map<string, WorkspaceStatus>();
       for (const s of statusResult.workspaces) {
@@ -94,9 +102,13 @@ export const CloudSyncManagerPanel = () => {
       }
       setStatusMap(map);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : String(err));
+      if (requestId === refreshRequestRef.current) {
+        message.error(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -186,11 +198,21 @@ export const CloudSyncManagerPanel = () => {
   };
 
   const handleRemove = async (id: string) => {
+    setRemovingId(id);
     try {
       await api().cloudSync.workspaceRemove({ id });
+      // 主进程删除成功后立即更新列表；随后的 refresh 仍以主进程结果为准。
+      setWorkspaces((previous) => previous.filter((workspace) => workspace.id !== id));
+      setStatusMap((previous) => {
+        const next = new Map(previous);
+        next.delete(id);
+        return next;
+      });
       await refresh();
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -300,18 +322,24 @@ export const CloudSyncManagerPanel = () => {
                     key="sync"
                     size="small"
                     loading={syncingId === ws.id}
-                    disabled={!ws.enabled}
+                    disabled={!ws.enabled || removingId !== null}
                     onClick={() => handleSync(ws.id)}
                   >
                     同步
                   </Button>,
-                  <Button key="edit" size="small" onClick={() => openEditModal(ws)}>
+                  <Button
+                    key="edit"
+                    size="small"
+                    disabled={removingId !== null}
+                    onClick={() => openEditModal(ws)}
+                  >
                     编辑
                   </Button>,
                   <Button
                     key="copy-token"
                     size="small"
                     loading={copyingTokenId === ws.id}
+                    disabled={removingId !== null}
                     onClick={() => void handleCopyToken(ws.id)}
                   >
                     复制 Token
@@ -319,13 +347,18 @@ export const CloudSyncManagerPanel = () => {
                   <Popconfirm
                     key="del"
                     title="确认删除此工作区？"
-                    description="关联的同步状态和云端资产都会被清除。"
+                    description="将移除本机的同步配置及该工作区的本地数据，云端工作区不受影响。"
                     onConfirm={() => handleRemove(ws.id)}
                     okText="删除"
                     cancelText="取消"
-                    okButtonProps={{ danger: true }}
+                    okButtonProps={{ danger: true, loading: removingId === ws.id }}
                   >
-                    <Button size="small" danger>
+                    <Button
+                      size="small"
+                      danger
+                      loading={removingId === ws.id}
+                      disabled={removingId !== null}
+                    >
                       删除
                     </Button>
                   </Popconfirm>

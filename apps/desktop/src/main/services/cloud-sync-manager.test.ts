@@ -39,6 +39,7 @@ const createDeps = (
   saveConnection: (_conn): void => undefined,
   removeConnection: (_id): void => undefined,
   listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  removeConnectionFolder: (_id): void => undefined,
   createConnectionFolder: ({ name, parentId }) => ({
     id: `test-folder-${name}`,
     name,
@@ -145,6 +146,7 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
     state.connections = state.connections.filter((item) => item.id !== id);
   },
   listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  removeConnectionFolder: (_id): void => undefined,
   createConnectionFolder: ({ name, parentId }) => ({
     id: `test-folder-${name}`,
     name,
@@ -1189,6 +1191,39 @@ describe("CloudSyncManager workspace command sync", () => {
 });
 
 describe("CloudSyncManager removal and mutation timing", () => {
+  test("removing a workspace clears its materialized folders and password", async () => {
+    const workspace = createWorkspace();
+    const state = createMutableState(workspace);
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
+    const folders = [
+      { id: "folder-root", name: "生产", parentId: undefined },
+      { id: "folder-child", name: "香港", parentId: "folder-root" }
+    ];
+    const removedFolderIds: string[] = [];
+    let removed = false;
+    const deps = createMutableDeps(state);
+    deps.listConnectionFolders = (nextScopeKey) => {
+      expect(nextScopeKey).toBe(scopeKey);
+      return folders;
+    };
+    deps.removeConnectionFolder = (id) => {
+      removedFolderIds.push(id);
+    };
+    deps.removeWorkspace = () => {
+      removed = true;
+    };
+
+    await new CloudSyncManager(deps).removeWorkspace(workspace.id);
+
+    expect(removed).toBe(true);
+    expect(removedFolderIds).toEqual(["folder-root", "folder-child"]);
+    expect(state.password).toBeUndefined();
+  });
+
   test("removing a workspace mid-sync neither resurrects it nor pushes the emptied snapshot", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
     const state = createMutableState(workspace);

@@ -62,8 +62,8 @@ export interface CloudSyncManagerDeps {
     parentId?: string;
     name: string;
   }>;
-  /** 删除 workspace 时清掉其物化目录；老测试/调用方可省略。 */
-  removeConnectionFolder?: (id: string) => void;
+  /** 删除 workspace 时清掉其物化目录。 */
+  removeConnectionFolder: (id: string) => void;
   createConnectionFolder: (input: { scopeKey: string; name: string; parentId?: string }) => {
     id: string;
     parentId?: string;
@@ -1322,6 +1322,9 @@ export class CloudSyncManager {
       await this.clearCredential(key.keyContentRef);
       await this.clearCredential(key.passphraseRef);
       this.deps.removeSshKey(key.id);
+    }
+    for (const folder of this.deps.listConnectionFolders(scopeKey)) {
+      this.deps.removeConnectionFolder(folder.id);
     }
     this.deps.replaceWorkspaceCommands(workspaceId, []);
   }
