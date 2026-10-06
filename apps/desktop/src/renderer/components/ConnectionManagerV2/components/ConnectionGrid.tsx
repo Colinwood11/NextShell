@@ -1,4 +1,4 @@
-import { memo, useCallback, useImperativeHandle, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { DragEvent, MouseEvent, RefObject } from "react";
 import { Tooltip } from "antd";
 import type { ConnectionFolder } from "@nextshell/core";
@@ -9,6 +9,16 @@ import {
   serializeConnectionDragIds
 } from "../utils/managerDrop";
 import type { GridConnectionItem, GridFolderItem, GridSection } from "../utils/gridItems";
+
+/**
+ * 单击目录会立即换出磁贴。若用户实际是在双击目录，第二击可能落到刚出现的连接磁贴上，
+ * Chromium 随后会把这两击派发成连接磁贴的 `dblclick`。这段保护窗口覆盖系统常见的双击间隔，
+ * 只拦截这个由目录点击引起的连接双击，不改变直接双击连接的既有行为。
+ */
+export const CONNECTION_DOUBLE_CLICK_GUARD_MS = 500;
+
+export const isWithinConnectionDoubleClickGuard = (elapsedMs: number): boolean =>
+  elapsedMs >= 0 && elapsedMs <= CONNECTION_DOUBLE_CLICK_GUARD_MS;
 
 /** 外部定位到某个连接时用。签名与休眠的表格保持一致——深链那条路径不必知道中栏换了形态。 */
 export interface ConnectionGridHandle {
@@ -31,7 +41,7 @@ interface ConnectionGridProps {
   /** 双击连接磁贴:关闭对话框并直连。 */
   onConnect: (connectionId: string) => void;
   onRowContextMenu: (event: MouseEvent, connectionId: string) => void;
-  /** 双击目录磁贴:钻取进去。 */
+  /** 单击或双击目录磁贴:钻取进去。 */
   onEnterFolder: (folderId: string) => void;
   onFolderContextMenu: (event: MouseEvent, folder: ConnectionFolder) => void;
   /** 把一批连接拖到某个目录磁贴上。 */
@@ -59,7 +69,7 @@ const attachDragGhost = (event: DragEvent<HTMLElement>, count: number): void => 
 /**
  * Finder 式图标网格(D18)。整块磁贴都是点击目标——实测反馈是表格行里的小按钮"跟玩 FPS
  * 一样得非常准才点得了",所以这里既没有行内按钮也没有勾选框,交互全部落在磁贴本身:
- * 单击选中、Ctrl/Cmd+单击加减、双击直连/钻取、右键菜单、拖拽移动。
+ * 单击选中/钻取、Ctrl/Cmd+单击加减、双击直连/钻取、右键菜单、拖拽移动。
  */
 const ConnectionGridInner = ({
   sections,
@@ -78,6 +88,60 @@ const ConnectionGridInner = ({
 }: ConnectionGridProps) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dropFolderId, setDropFolderId] = useState<string>();
+  const folderClickAtRef = useRef<number | undefined>(undefined);
+  const folderClickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      if (folderClickTimerRef.current !== undefined) {
+        clearTimeout(folderClickTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const markFolderClick = useCallback(() => {
+    const clickedAt = Date.now();
+    folderClickAtRef.current = clickedAt;
+    if (folderClickTimerRef.current !== undefined) {
+      clearTimeout(folderClickTimerRef.current);
+    }
+    folderClickTimerRef.current = setTimeout(() => {
+      if (folderClickAtRef.current === clickedAt) {
+        folderClickAtRef.current = undefined;
+        folderClickTimerRef.current = undefined;
+      }
+    }, CONNECTION_DOUBLE_CLICK_GUARD_MS);
+  }, []);
+
+  const clearFolderDoubleClickGuard = useCallback(() => {
+    folderClickAtRef.current = undefined;
+    if (folderClickTimerRef.current !== undefined) {
+      clearTimeout(folderClickTimerRef.current);
+      folderClickTimerRef.current = undefined;
+    }
+  }, []);
+
+  const isFolderDoubleClickGuardActive = useCallback(() => {
+    const clickedAt = folderClickAtRef.current;
+    if (clickedAt === undefined) {
+      return false;
+    }
+    const elapsedMs = Date.now() - clickedAt;
+    if (!isWithinConnectionDoubleClickGuard(elapsedMs)) {
+      clearFolderDoubleClickGuard();
+      return false;
+    }
+    return true;
+  }, [clearFolderDoubleClickGuard]);
+
+  const consumeFolderDoubleClickGuard = useCallback(() => {
+    if (!isFolderDoubleClickGuardActive()) {
+      return false;
+    }
+    clearFolderDoubleClickGuard();
+    return true;
+  }, [clearFolderDoubleClickGuard, isFolderDoubleClickGuardActive]);
 
   useImperativeHandle(
     gridRef,
@@ -170,10 +234,18 @@ const ConnectionGridInner = ({
       data-folder-id={item.folder.id}
       onClick={(event) => {
         if (!event.metaKey && !event.ctrlKey) {
+          markFolderClick();
           onClearSelection();
+          onEnterFolder(item.folder.id);
         }
       }}
-      onDoubleClick={() => onEnterFolder(item.folder.id)}
+      onDoubleClick={() => {
+        // If the folder stayed under the pointer for both clicks, no connection was exposed.
+        // Clear the pending cross-tile guard so a following intentional connection double-click
+        // is not mistaken for the second half of this folder double-click.
+        clearFolderDoubleClickGuard();
+        onEnterFolder(item.folder.id);
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onFolderContextMenu(event, item.folder);
@@ -211,8 +283,24 @@ const ConnectionGridInner = ({
           data-connection-id={connection.id}
           draggable
           onDragStart={(event) => handleDragStart(event, connection.id)}
-          onClick={(event) => handleTileClick(event, connection.id)}
-          onDoubleClick={() => onConnect(connection.id)}
+          onClick={(event) => {
+            // The second click of a folder double-click may land on this newly exposed tile.
+            // Ignore the click as well as the later `dblclick`, so it cannot open a detail card
+            // or trigger an edit guard for a server the user did not click.
+            if (isFolderDoubleClickGuardActive()) {
+              return;
+            }
+            handleTileClick(event, connection.id);
+          }}
+          onDoubleClick={() => {
+            // The first click on a folder has already replaced the DOM under the pointer. If the
+            // second physical click lands on this connection, Chromium emits a connection
+            // `dblclick`; consuming it prevents an accidental connection to an unclicked server.
+            if (consumeFolderDoubleClickGuard()) {
+              return;
+            }
+            onConnect(connection.id);
+          }}
           onContextMenu={(event) => onRowContextMenu(event, connection.id)}
         >
           <span className="cm2-tile-icon">

@@ -274,7 +274,16 @@ export const ConnectionManagerV2 = ({
     },
     [leaveEditBeforeMutating]
   );
-  const scope = useManagerScope({ open, onError: notifyError });
+  const hasLocalConnections = useMemo(
+    () => connections.some((item) => resourceMatchesOriginScope(item, LOCAL_SCOPE.key)),
+    [connections]
+  );
+  const scope = useManagerScope({
+    open,
+    onError: notifyError,
+    hasLocalConnections,
+    preferCloudWhenNoLocal: initialAction !== "create"
+  });
 
   const dialogSize = useMemo(
     () =>

@@ -10,7 +10,11 @@ import { FolderTree } from "./FolderTree";
 import { ProxyPane } from "./ProxyPane";
 import { SshKeyPane } from "./SshKeyPane";
 import { ConnectionTable } from "./ConnectionTable";
-import { ConnectionGrid } from "./ConnectionGrid";
+import {
+  CONNECTION_DOUBLE_CLICK_GUARD_MS,
+  ConnectionGrid,
+  isWithinConnectionDoubleClickGuard
+} from "./ConnectionGrid";
 import { GridPathBar } from "./GridPathBar";
 import { DetailCard } from "./DetailCard";
 import { ManagerToolbar } from "./ManagerToolbar";
@@ -293,6 +297,13 @@ describe("ConnectionGrid", () => {
   test("空目录给出空态文案", () => {
     const html = renderToStaticMarkup(<ConnectionGrid {...gridProps} sections={[]} />);
     expect(html).toContain("此目录为空");
+  });
+
+  test("目录单击换出磁贴后,同一次双击落在新连接上不会触发直连", () => {
+    // 真实 Chromium 的事件顺序是:目录 click(进入目录) -> 新连接 click/dblclick。
+    // 120ms 是审计中复现事故的间隔;保护窗口外的普通连接双击仍保持原行为。
+    expect(isWithinConnectionDoubleClickGuard(120)).toBe(true);
+    expect(isWithinConnectionDoubleClickGuard(CONNECTION_DOUBLE_CLICK_GUARD_MS + 1)).toBe(false);
   });
 });
 
