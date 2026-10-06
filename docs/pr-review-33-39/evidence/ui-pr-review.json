@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-10-06T12:27:46.042Z",
+  "runtime": "Electron 40.10.6 production dist via CDP 9223, isolated userData nextshell-pr-review-ui-20261006g",
+  "scenarios": {
+    "pr37": {
+      "confirmText": "将移除本机的同步配置及该工作区的本地数据，云端工作区不受影响。",
+      "popover": {
+        "opacity": 1,
+        "zIndex": "1200",
+        "buttonTopmost": true
+      },
+      "afterDelete": {
+        "workspaces": 0,
+        "connections": 0,
+        "folders": 0
+      },
+      "screenshots": [
+        "37-confirm.png",
+        "37-removed.png"
+      ]
+    },
+    "pr39": {
+      "unselected": {
+        "dialogText": "删除目录「mid39」\n不勾选时，子目录会一并删除，其中的服务器会移动到上一级。\n删除服务器会关闭相关会话，并将其移入回收站。\n同时删除文件夹内的服务器（含子目录）\n取 消\n删 除",
+        "result": {
+          "midExists": false,
+          "leafExists": false,
+          "connection": {
+            "folderId": "499bcc2b-7e76-4363-9508-85e43096ac0c",
+            "groupPath": "/server/root39"
+          }
+        }
+      },
+      "selected": {
+        "dialogText": "删除目录「mid39」\n不勾选时，子目录会一并删除，其中的服务器会移动到上一级。\n删除服务器会关闭相关会话，并将其移入回收站。\n同时删除文件夹内的服务器（含子目录）\n取 消\n删 除",
+        "checked": true,
+        "result": {
+          "midExists": false,
+          "leafExists": false,
+          "connectionExists": false,
+          "recycleCount": 1
+        }
+      },
+      "screenshots": [
+        "39-folder-confirm-unchecked.png",
+        "39-folder-confirm-checked.png"
+      ]
+    },
+    "pr38": {
+      "dblclick": {
+        "event": "Playwright locator.dblclick on real Electron page",
+        "result": {
+          "folderTiles": [],
+          "connectionTiles": [
+            "Dbl A127.0.0.1",
+            "Dbl B127.0.0.1"
+          ],
+          "detail": [
+            "连接管理器作用域本地连接密钥代理目录最近连接本地4root1root391root39brootD2新建连接本地rootDdbl-folder名称Dbl A127.0.0.1Dbl B127.0.0.1"
+          ]
+        },
+        "screenshot": "38-folder-dblclick.png"
+      },
+      "cloudScope": {
+        "result": "Selected PR UI Cloud scope and showed Cloud UI 127.0.0.1",
+        "screenshot": "38-cloud-scope.png"
+      },
+      "delayedWorkspaceList": "not injected: contextBridge method is non-writable; covered by renderer regression tests"
+    },
+    "pr36": {
+      "sftp": "not verified: test endpoint intentionally unreachable; app showed ConnectionPrompt"
+    }
+  }
+}
