@@ -17,7 +17,7 @@
 - [x] #36/#37/#39/#38 已准备从 `upstream/main` 拆分的 clean branch 方案，禁止继续携带 merge 堆叠历史。
 - [x] #35 的 `.gitattributes` 作为可选项不增加。
 - [x] body 只列真实跑过的命令；全量测试的平台/环境失败单独标明。
-- [ ] GitHub PR head/body 更新与 #34 关闭：等待 clean branch 提交和推送完成。
+- [ ] GitHub PR head/body 更新与 #34 关闭：clean branch 已推送，待本轮 API 操作完成。
 
 ## 编号状态
 
@@ -33,9 +33,9 @@
 
 ## 已完成的自动化验证
 
-以下结果来自当前修复过程；在最终 PR body 中应以本次提交后重新执行的结果为准：
+以下结果来自当前修复过程，并已写入对应 PR body：
 
-- 定向 Vitest：云同步、目录服务、存储目录和连接管理器测试通过。
+- 定向 Vitest：19 个文件、274 个测试通过；#35 shell integration 单测通过。
 - `pnpm run typecheck` 通过。
 - 变更文件 Prettier 检查和 `git diff --check` 通过。
 - ESLint 无错误；已有 Hook 依赖警告需原样说明。

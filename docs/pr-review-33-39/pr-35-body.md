@@ -8,8 +8,8 @@ Windows checkout 可能把 shell integration 资源带成 CRLF；这些字节原
 
 ## Validation
 
-- `pnpm exec vitest run <实际 shell integration 与 launch 测试>`
+- `pnpm exec vitest run apps/desktop/src/shared/shell-integration/index.spec.ts`（通过）
 - `pnpm --filter @nextshell/desktop run typecheck`
-- Windows 环境无法执行的 POSIX bash/dash 用例：`[待填实际数量和原因]`
+- Windows 环境不执行 POSIX bash/dash 运行时用例；本次只报告 TypeScript/Vitest 静态与单测结果。
 
 可选补充：增加 `.gitattributes` 将四个脚本固定为 LF。若不增加，该补充不影响本 PR 的运行时修复。

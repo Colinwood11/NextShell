@@ -17,9 +17,11 @@
 ## Validation
 
 - `pnpm exec vitest run apps/desktop/src/main/services/cloud-sync-manager.test.ts apps/desktop/src/main/services/import-export.spec.ts apps/desktop/src/main/services/connection-folder-service.spec.ts packages/storage/src/cached-repository.test.ts packages/storage/src/connection-folders.test.ts`
+- 定向审查回归：19 个文件、274 个测试通过。
 - `pnpm run typecheck`
-- `pnpm exec prettier --check <本 PR 变更文件>`
+- `pnpm run build`
+- `pnpm exec prettier --check`（变更源码和审查文档）
 - `git diff --check`
-- 真实 UI/浏览器验证：`[待填实际命令、结果和证据]`
+- 真实 Electron 补充验证记录与截图：[审查证据](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/review-completion.md)。
 
 若全量测试仍受 Windows 文件 URL、Shell 子进程或 screen-mirror 环境影响，请列出实际失败用例和环境，不要写成全量通过。
