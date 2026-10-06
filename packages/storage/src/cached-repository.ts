@@ -156,14 +156,15 @@ export class CachedConnectionRepository implements ConnectionRepository {
     }
   }
 
-  /** 只改 groupPath 一列(目录改名/移动/删除后的重投影),缓存里同步替换那一条。 */
-  updateConnectionGroupPath(id: string, groupPath: string): void {
-    this.inner.updateConnectionGroupPath(id, groupPath);
+  /** 只改目录投影和更新时间(目录改名/移动/删除后的重投影),缓存里同步替换那一条。 */
+  updateConnectionGroupPath(id: string, groupPath: string, updatedAt?: string): void {
+    const nextUpdatedAt = updatedAt ?? new Date().toISOString();
+    this.inner.updateConnectionGroupPath(id, groupPath, nextUpdatedAt);
     const cached = this.connById?.get(id);
     if (!cached) {
       return;
     }
-    const next: ConnectionProfile = { ...cached, groupPath };
+    const next: ConnectionProfile = { ...cached, groupPath, updatedAt: nextUpdatedAt };
     this.connById?.set(id, next);
     if (this.connList) {
       const idx = this.connList.findIndex((c) => c.id === id);
@@ -176,9 +177,8 @@ export class CachedConnectionRepository implements ConnectionRepository {
   /**
    * 丢弃连接缓存,下次读取重新从库里加载。
    *
-   * 目录删除走的是 `DELETE FROM connection_folders`,`connections.folder_id` 由外键
-   * `ON DELETE SET NULL` 级联清空——这一步绕过了本缓存,不重读的话内存里那份还挂在
-   * 一个已经不存在的目录上。
+   * 目录删除会在删除目录前把 `connections.folder_id` 移到目标父目录——这一步绕过了
+   * 本缓存,不重读的话内存里仍可能保留旧目录 id。
    */
   invalidateConnections(): void {
     this.connList = undefined;

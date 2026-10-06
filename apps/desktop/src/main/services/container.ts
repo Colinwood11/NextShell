@@ -563,7 +563,7 @@ export const createServiceContainer = async (
     ensureConnection,
     listWorkspaces: () => connections.listCloudSyncWorkspaces(),
     markWorkspaceCommandsDirty: (workspaceId) => {
-      cloudSyncManager?.markWorkspaceCommandsDirty(workspaceId);
+      cloudSyncManager?.markWorkspaceDirty(workspaceId);
     }
   });
 
@@ -614,6 +614,9 @@ export const createServiceContainer = async (
     listConnections: () => connections.list({}),
     saveConnection: (conn) => connections.save(conn),
     removeConnection: (id) => connections.remove(id),
+    listConnectionFolders: (scopeKey) => folderRepo.list(scopeKey),
+    removeConnectionFolder: (id) => folderRepo.remove(id),
+    createConnectionFolder: (input) => folderRepo.create(input),
     listSshKeys: () => sshKeyRepo.list(),
     saveSshKey: (key) => sshKeyRepo.save(key),
     removeSshKey: (id) => sshKeyRepo.remove(id),
@@ -666,7 +669,8 @@ export const createServiceContainer = async (
   const folderSvc = new ConnectionFolderService({
     folders: folderRepo,
     connections,
-    listCloudWorkspaces: () => cloudSyncManager?.listWorkspaces() ?? []
+    listCloudWorkspaces: () => cloudSyncManager?.listWorkspaces() ?? [],
+    onCloudScopeChanged: (workspaceId) => cloudSyncManager?.markWorkspaceDirty(workspaceId)
   });
 
   // Resource Operations Service

@@ -1515,7 +1515,7 @@ export interface ConnectionRepository {
    * `save()` 的全行 upsert 会把调用方手里那份(可能已经过时的)ConnectionProfile 整体写回,
    * 把别处刚改过的字段一起覆盖掉。
    */
-  updateConnectionGroupPath: (id: string, groupPath: string) => void;
+  updateConnectionGroupPath: (id: string, groupPath: string, updatedAt?: string) => void;
   remove: (id: string) => void;
   getById: (id: string) => ConnectionProfile | undefined;
   seedIfEmpty: (connections: ConnectionProfile[]) => void;
@@ -1784,8 +1784,14 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
       });
   }
 
-  updateConnectionGroupPath(id: string, groupPath: string): void {
-    this.db.prepare("UPDATE connections SET group_path = ? WHERE id = ?").run(groupPath, id);
+  updateConnectionGroupPath(
+    id: string,
+    groupPath: string,
+    updatedAt = new Date().toISOString()
+  ): void {
+    this.db
+      .prepare("UPDATE connections SET group_path = ?, updated_at = ? WHERE id = ?")
+      .run(groupPath, updatedAt, id);
   }
 
   remove(id: string): void {

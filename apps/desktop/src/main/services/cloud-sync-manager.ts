@@ -12,12 +12,14 @@ import type {
   WorkspaceRepoStatus
 } from "@nextshell/core";
 import { buildResourceId, buildScopeKey, LOCAL_DEFAULT_SCOPE_KEY } from "@nextshell/core";
+import { parseGroupPathSegments } from "@nextshell/shared";
 import { decryptWorkspaceSecret, encryptWorkspaceSecret } from "@nextshell/security";
 import { CloudSyncApiV3Client, type CloudSyncApiV3Credentials } from "./cloud-sync-api-v3";
 import {
   encodeCloudSyncWorkspaceToken,
   parseCloudSyncWorkspaceToken
 } from "./cloud-sync-workspace-token";
+import { materializeFolderChain, type ImportFolderStore } from "./import-export";
 
 export interface CloudSyncManagerStatus {
   workspaces: WorkspaceRepoStatus[];
@@ -55,6 +57,18 @@ export interface CloudSyncManagerDeps {
   listConnections: () => ConnectionProfile[];
   saveConnection: (conn: ConnectionProfile) => void;
   removeConnection: (id: string) => void;
+  listConnectionFolders: (scopeKey: string) => Array<{
+    id: string;
+    parentId?: string;
+    name: string;
+  }>;
+  /** 删除 workspace 时清掉其物化目录；老测试/调用方可省略。 */
+  removeConnectionFolder?: (id: string) => void;
+  createConnectionFolder: (input: { scopeKey: string; name: string; parentId?: string }) => {
+    id: string;
+    parentId?: string;
+    name: string;
+  };
 
   listSshKeys: () => SshKeyProfile[];
   saveSshKey: (key: SshKeyProfile) => void;
@@ -332,7 +346,7 @@ export class CloudSyncManager {
 
     this.removedWorkspaceIds.add(workspaceId);
     this.stopRuntime(workspaceId);
-    await this.clearWorkspaceMaterializedData(workspaceId);
+    await this.clearWorkspaceMaterializedData(workspaceId, workspace);
     await this.deps.deleteWorkspacePassword(workspaceId);
     this.deps.removeWorkspace(workspaceId);
     this.broadcastManagerStatus();
@@ -376,46 +390,42 @@ export class CloudSyncManager {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   pushConnectionDelete(profile: ConnectionProfile): void {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   pushSshKeyUpsert(profile: SshKeyProfile): void {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   pushSshKeyDelete(profile: SshKeyProfile): void {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   pushProxyUpsert(profile: ProxyProfile): void {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   pushProxyDelete(profile: ProxyProfile): void {
     if (profile.originKind !== "cloud" || !profile.originWorkspaceId) {
       return;
     }
-    this.recordWorkspaceMutation(profile.originWorkspaceId);
-  }
-
-  markWorkspaceCommandsDirty(workspaceId: string): void {
-    void this.syncNow(workspaceId).catch(() => undefined);
+    this.markWorkspaceDirty(profile.originWorkspaceId);
   }
 
   private startRuntime(workspace: CloudSyncWorkspaceProfile): void {
@@ -826,8 +836,9 @@ export class CloudSyncManager {
   }
 
   private workspaceFingerprint(workspaceId: string): string {
+    const connections = this.listWorkspaceConnections(workspaceId);
     const items: Array<[string, string, string]> = [
-      ...this.listWorkspaceConnections(workspaceId).map((item) =>
+      ...connections.map((item) =>
         fingerprintItem("connection", item.uuidInScope ?? item.id, item.updatedAt)
       ),
       ...this.listWorkspaceSshKeys(workspaceId).map((item) =>
@@ -1088,6 +1099,8 @@ export class CloudSyncManager {
       retainedProxyIds.add(localId);
     }
 
+    // 目录链只需在本轮 pull 开始时读取一次;适配导入路径的同名复用与并发冲突恢复。
+    const folderStore = this.createConnectionFolderStore(scopeKey);
     for (const connection of snapshot.connections) {
       const existing = connectionByUuid.get(connection.uuid);
       const localId = existing?.id ?? randomUUID();
@@ -1100,6 +1113,7 @@ export class CloudSyncManager {
       const credentialRef = password
         ? await this.replaceCredential(existing?.credentialRef, `conn-${localId}`, password)
         : await this.clearCredential(existing?.credentialRef);
+      const groupPath = normalizeWorkspaceGroupPath(workspace.workspaceName, connection.groupPath);
 
       const profile: ConnectionProfile = {
         id: localId,
@@ -1118,11 +1132,13 @@ export class CloudSyncManager {
         terminalEncoding: connection.terminalEncoding,
         backspaceMode: connection.backspaceMode,
         deleteMode: connection.deleteMode,
-        groupPath: normalizeWorkspaceGroupPath(workspace.workspaceName, connection.groupPath),
-        // folderId 不在线协议里,是本地的目录归属。`saveConnection` 是全行 upsert
-        // (`folder_id = connection.folderId ?? null`),这里不兜底的话每次 pull 都会把云连接
-        // 的目录清空,连接在树上掉回根,而 groupPath 还写着目录名——两边直接分叉。
-        folderId: existing?.folderId,
+        groupPath,
+        // folderId 是本地投影，按云端 groupPath 物化目录链后写入连接归属。
+        folderId: materializeFolderChain(
+          parseGroupPathSegments(groupPath, { stripWirePrefix: true }),
+          undefined,
+          folderStore
+        ),
         tags: [...connection.tags],
         notes: connection.notes,
         favorite: connection.favorite,
@@ -1168,6 +1184,22 @@ export class CloudSyncManager {
       await this.clearCredential(key.passphraseRef);
       this.deps.removeSshKey(key.id);
     }
+  }
+
+  private createConnectionFolderStore(scopeKey: string): ImportFolderStore {
+    let folders = this.deps.listConnectionFolders(scopeKey);
+    return {
+      list: () => folders,
+      create: (name, parentId) => {
+        const created = this.deps.createConnectionFolder({ scopeKey, name, parentId });
+        folders = [...folders, created];
+        return created;
+      },
+      refresh: () => {
+        folders = this.deps.listConnectionFolders(scopeKey);
+        return folders;
+      }
+    };
   }
 
   private async saveRemoteDeletedConnection(connection: ConnectionProfile): Promise<void> {
@@ -1269,7 +1301,15 @@ export class CloudSyncManager {
       .filter((proxy) => proxy.originKind === "cloud" && proxy.originWorkspaceId === workspaceId);
   }
 
-  private async clearWorkspaceMaterializedData(workspaceId: string): Promise<void> {
+  private async clearWorkspaceMaterializedData(
+    workspaceId: string,
+    workspace: CloudSyncWorkspaceProfile
+  ): Promise<void> {
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
     for (const connection of this.listWorkspaceConnections(workspaceId)) {
       await this.clearCredential(connection.credentialRef);
       this.deps.removeConnection(connection.id);
@@ -1327,7 +1367,7 @@ export class CloudSyncManager {
     return encrypted;
   }
 
-  private recordWorkspaceMutation(workspaceId: string): void {
+  markWorkspaceDirty(workspaceId: string): void {
     // The local snapshot is derived from the live DB at sync time, so a local
     // edit just needs to trigger a sync.
     void this.syncNow(workspaceId).catch(() => undefined);

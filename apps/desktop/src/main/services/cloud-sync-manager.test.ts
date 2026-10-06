@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, test, vi } from "vitest";
 import { buildScopeKey } from "@nextshell/core";
 import type {
@@ -37,6 +38,12 @@ const createDeps = (
   listConnections: (): ConnectionProfile[] => [],
   saveConnection: (_conn): void => undefined,
   removeConnection: (_id): void => undefined,
+  listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  createConnectionFolder: ({ name, parentId }) => ({
+    id: `test-folder-${name}`,
+    name,
+    parentId
+  }),
   listSshKeys: (): SshKeyProfile[] => [],
   saveSshKey: (_key): void => undefined,
   removeSshKey: (_id): void => undefined,
@@ -137,6 +144,12 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
   removeConnection: (id): void => {
     state.connections = state.connections.filter((item) => item.id !== id);
   },
+  listConnectionFolders: (): Array<{ id: string; parentId?: string; name: string }> => [],
+  createConnectionFolder: ({ name, parentId }) => ({
+    id: `test-folder-${name}`,
+    name,
+    parentId
+  }),
   listSshKeys: (): SshKeyProfile[] => state.sshKeys,
   saveSshKey: (key): void => {
     state.sshKeys = [...state.sshKeys.filter((item) => item.id !== key.id), key];
@@ -316,6 +329,71 @@ describe("CloudSyncManager workspace token", () => {
 });
 
 describe("CloudSyncManager workspace repo sync", () => {
+  test("accepts the legacy fingerprint after upgrade when only the remote head advanced", async () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
+    const connection: ConnectionProfile = {
+      id: "local-id-1",
+      name: "Same connection",
+      host: "same.example.com",
+      port: 22,
+      username: "root",
+      authType: "agent",
+      strictHostKeyChecking: false,
+      groupPath: "/workspace/prod-team/prod",
+      tags: [],
+      favorite: false,
+      monitorSession: false,
+      terminalEncoding: "utf-8",
+      backspaceMode: "ascii-backspace",
+      deleteMode: "vt220-delete",
+      createdAt: now,
+      updatedAt: now,
+      uuidInScope: "same-connection",
+      originKind: "cloud",
+      originScopeKey: scopeKey,
+      originWorkspaceId: workspace.id
+    };
+    const state = createMutableState(workspace, {
+      connections: [connection],
+      localState: {
+        workspaceId: workspace.id,
+        remoteVersion: "base-version",
+        // 老版本只按 [type, uuid, updatedAt] 计算资产指纹,没有 connectionGroup 条目。
+        localFingerprint: createHash("sha256")
+          .update(JSON.stringify([["connection", "same-connection", now]]), "utf8")
+          .digest("hex")
+      }
+    });
+    const manager = new CloudSyncManager(createMutableDeps(state));
+    let pulled = false;
+    (manager as unknown as { api: unknown }).api = {
+      pull: async () => {
+        pulled = true;
+        return { unchanged: true, headCommitId: "remote-version" };
+      }
+    };
+
+    const result = await (
+      manager as unknown as {
+        syncWorkspaceRepo: (
+          workspace: CloudSyncWorkspaceProfile,
+          credentials: ReturnType<typeof testCredentials>,
+          localState: WorkspaceRepoLocalState,
+          remoteVersion?: string
+        ) => Promise<WorkspaceSyncResult>;
+      }
+    ).syncWorkspaceRepo(workspace, testCredentials(workspace), state.localState!, "remote-version");
+
+    expect(pulled).toBe(true);
+    expect(result.syncState).toBe("synced");
+    expect(result.remoteVersion).toBe("remote-version");
+  });
+
   test("pulls when only the remote head changed", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
     const remote = repoSnapshot(workspace.id, "remote-snapshot", [
@@ -848,13 +926,18 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
       originWorkspaceId: workspace.id
     } as ConnectionProfile;
     const state = createMutableState(workspace, { connections: [existing] });
-    const manager = new CloudSyncManager(createMutableDeps(state));
+    const deps = createMutableDeps(state);
+    deps.listConnectionFolders = () => [{ id: "folder-asia", name: "asia" }];
+    const manager = new CloudSyncManager(deps);
 
     await (manager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }).applyWorkspaceSnapshot(
       workspace,
       "workspace-password",
       repoSnapshot(workspace.id, "remote-snapshot", [
-        snapshotConnection("conn-1", "Prod", "new.example.com")
+        {
+          ...snapshotConnection("conn-1", "Prod", "new.example.com"),
+          groupPath: "/workspace/prod-team/asia"
+        }
       ])
     );
 
@@ -877,6 +960,33 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
     );
 
     expect(state.connections[0]?.folderId).toBeUndefined();
+  });
+
+  test("materializes a remote group path into local folders", async () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const state = createMutableState(workspace);
+    const folders: Array<{ id: string; name: string; parentId?: string }> = [];
+    const deps = createMutableDeps(state);
+    deps.listConnectionFolders = () => folders.map((folder) => ({ ...folder }));
+    deps.createConnectionFolder = ({ name, parentId }) => {
+      const folder = { id: `folder-${folders.length + 1}`, name, parentId };
+      folders.push(folder);
+      return folder;
+    };
+    const manager = new CloudSyncManager(deps);
+    const remoteConnection = {
+      ...snapshotConnection("conn-new", "New", "new.example.com"),
+      groupPath: "/workspace/prod-team/prod/asia"
+    };
+
+    await (manager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }).applyWorkspaceSnapshot(
+      workspace,
+      "workspace-password",
+      repoSnapshot(workspace.id, "remote-snapshot", [remoteConnection])
+    );
+
+    expect(folders.map(({ name }) => name)).toEqual(["prod", "asia"]);
+    expect(state.connections[0]?.folderId).toBe("folder-2");
   });
 
   test("moves resources deleted remotely into the recycle bin", async () => {

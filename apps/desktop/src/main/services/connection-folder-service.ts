@@ -24,10 +24,11 @@ export interface ConnectionFolderServiceOptions {
   folders: ConnectionFolderRepository;
   connections: FolderProjectionConnectionStore;
   /**
-   * 云 scope 的 workspace 名——`/workspace/<slug>` 的 slug 来源。
+   * 云 scope 的 workspace 元数据——`/workspace/<slug>` 的 slug 和同步回调 id 来源。
    * 惰性取:CloudSyncManager 在容器里晚于目录仓储构造。
    */
   listCloudWorkspaces: () => CloudSyncWorkspaceProfile[];
+  onCloudScopeChanged?: (workspaceId: string) => void;
 }
 
 /**
@@ -97,7 +98,9 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
    */
   private reprojectScope(scopeKey: string): void {
     const folders = this.options.folders.list(scopeKey);
-    const workspaceName = this.resolveWorkspaceName(scopeKey);
+    const workspace = this.resolveWorkspace(scopeKey);
+    const workspaceName = workspace?.workspaceName;
+    let changed = false;
     for (const connection of this.options.connections.list({})) {
       if (resolveOriginScopeKey(connection) !== scopeKey) {
         continue;
@@ -113,10 +116,16 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
         continue;
       }
       this.options.connections.updateConnectionGroupPath(connection.id, nextGroupPath);
+      changed = true;
+    }
+    if (changed && scopeKey !== LOCAL_DEFAULT_SCOPE_KEY) {
+      if (workspace) {
+        this.options.onCloudScopeChanged?.(workspace.id);
+      }
     }
   }
 
-  private resolveWorkspaceName(scopeKey: string): string | undefined {
+  private resolveWorkspace(scopeKey: string): CloudSyncWorkspaceProfile | undefined {
     if (scopeKey === LOCAL_DEFAULT_SCOPE_KEY) {
       return undefined;
     }
@@ -127,6 +136,6 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
           apiBaseUrl: workspace.apiBaseUrl,
           workspaceName: workspace.workspaceName
         }) === scopeKey
-    )?.workspaceName;
+    );
   }
 }
