@@ -16,6 +16,6 @@ SFTP 目录树和文件列表可能超过底部工作区高度，导致内容被
 ## Validation
 
 - `pnpm --filter @nextshell/desktop run typecheck`
-- `pnpm --filter @nextshell/desktop run build`
+- `pnpm --filter @nextshell/desktop run build`（最终整合工作区；clean branch 本身另已通过 node/web typecheck）
 - 真实 Electron UI：本次使用不可达 `127.0.0.1:65534` 测试连接，只能验证 `ConnectionPrompt`；没有真实 SSH 会话，因此 FileExplorerPane 的 `clientHeight/scrollHeight` 未宣称通过。
 - 补充 renderer harness（真实 Electron Chromium、mock IPC，`fullApp=false`）：shell/tree `520/520`，`display:flex`、`min-height:0`、`overflow:hidden`；证据：[SFTP 布局](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/36-sftp-layout-scroll.png)、[结果 JSON](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/renderer-ui-results.json)。
