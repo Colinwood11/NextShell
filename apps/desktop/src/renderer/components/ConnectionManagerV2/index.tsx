@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, KeyboardEvent, MouseEvent } from "react";
-import { App as AntdApp, Modal } from "antd";
+import { App as AntdApp, Checkbox, Modal } from "antd";
 import type {
   ConnectionFolder,
   ConnectionProfile,
@@ -290,6 +290,12 @@ export const ConnectionManagerV2 = ({
     () => connections.filter((item) => resourceMatchesOriginScope(item, scope.activeScope.key)),
     [connections, scope.activeScope.key]
   );
+  // Confirmation callbacks may run after an async sync refresh. Keep the latest scope snapshot
+  // available so directory deletion does not miss connections added while the dialog was open.
+  const scopedConnectionsRef = useRef(scopedConnections);
+  scopedConnectionsRef.current = scopedConnections;
+  const foldersRef = useRef(scope.folders);
+  foldersRef.current = scope.folders;
   // 「从本地复制…」的候选源，只在云作用域用到。
   const localConnections = useMemo(
     () => connections.filter((item) => resourceMatchesOriginScope(item, LOCAL_SCOPE.key)),
@@ -473,6 +479,34 @@ export const ConnectionManagerV2 = ({
     ]
   );
 
+  /**
+   * Delete a batch through the same IPC path as the regular connection delete action.
+   * That path closes sessions, snapshots to the recycle bin, removes credentials and
+   * emits cloud tombstones. Keep the successful-id bookkeeping here so a later failure
+   * still clears only the connections that were actually removed.
+   */
+  const removeConnections = useCallback(
+    async (ids: readonly string[], removed: Set<string>): Promise<void> => {
+      try {
+        for (const id of ids) {
+          if (removed.has(id)) {
+            continue;
+          }
+          await window.nextshell.connection.remove({ id });
+          removed.add(id);
+        }
+      } finally {
+        // 只摘掉被删的那几个：整体清空会把"删 A 时正好选中/正在编辑 B"一起清掉，
+        // B 的编辑器就这么没了，而用户只是删了另一条。
+        setSelectedIds((previous) => previous.filter((id) => !removed.has(id)));
+        if (affectsDetailConnection(detailConnectionId(detailRef.current), [...removed])) {
+          openDetail({ kind: "empty" });
+        }
+      }
+    },
+    [openDetail]
+  );
+
   const handleDelete = useCallback(
     (ids: string[]) => {
       const removed = new Set<string>();
@@ -484,29 +518,17 @@ export const ConnectionManagerV2 = ({
         okButtonProps: { danger: true },
         onOk: async () => {
           try {
-            for (const id of ids) {
-              if (removed.has(id)) {
-                continue;
-              }
-              await window.nextshell.connection.remove({ id });
-              removed.add(id);
-            }
+            await removeConnections(ids, removed);
           } catch (error) {
             message.error(`删除失败：${formatErrorMessage(error, "请稍后重试")}`);
             throw error;
           } finally {
-            // 只摘掉被删的那几个：整体清空会把"删 A 时正好选中/正在编辑 B"一起清掉，
-            // B 的编辑器就这么没了，而用户只是删了另一条。
-            setSelectedIds((previous) => previous.filter((id) => !removed.has(id)));
-            if (affectsDetailConnection(detailConnectionId(detailRef.current), [...removed])) {
-              openDetail({ kind: "empty" });
-            }
             await onReloadConnections();
           }
         }
       });
     },
-    [message, modal, onReloadConnections, openDetail, scopedConnections]
+    [message, modal, onReloadConnections, removeConnections, scopedConnections]
   );
 
   // 导出的目录选择、明文/加密选项与批量结果汇总沿用既有 hook，不重复一套。
@@ -692,26 +714,54 @@ export const ConnectionManagerV2 = ({
 
   const handleDeleteFolder = useCallback(
     (folder: ConnectionFolder) => {
+      let deleteConnections = false;
+      const removed = new Set<string>();
       modal.confirm({
         title: `删除目录「${folder.name}」`,
-        content: "只移除目录本身，里面的连接和子目录会回到上一层。",
+        content: (
+          <div>
+            <div>不勾选时，子目录会一并删除，其中的服务器会移动到上一级。</div>
+            <div>删除服务器会关闭相关会话，并将其移入回收站。</div>
+            <Checkbox onChange={(event) => (deleteConnections = event.target.checked)}>
+              同时删除文件夹内的服务器（含子目录）
+            </Checkbox>
+          </div>
+        ),
         okText: "删除",
         cancelText: "取消",
         okButtonProps: { danger: true },
         onOk: async () => {
-          const affectedIds = scopedConnections
-            .filter((connection) => connection.folderId === folder.id)
+          // Compute this at confirmation time rather than when the dialog opens: a sync refresh
+          // may have added or moved a connection while the user was deciding what to delete.
+          const subtreeFolderIds = collectDescendantIds(folder.id, foldersRef.current);
+          subtreeFolderIds.add(folder.id);
+          const affectedIds = scopedConnectionsRef.current
+            .filter(
+              (connection) => connection.folderId && subtreeFolderIds.has(connection.folderId)
+            )
             .map((connection) => connection.id);
+          let connectionsDeleted = false;
           if (!(await leaveEditBeforeMutating(affectedIds))) {
             return Promise.reject(new Error("已取消删除目录"));
           }
           try {
+            if (deleteConnections) {
+              await removeConnections(affectedIds, removed);
+              connectionsDeleted = true;
+            }
             await window.nextshell.connectionFolder.remove({ id: folder.id });
             await scope.reloadFolders();
-            await onReloadConnections();
           } catch (error) {
-            message.error(`删除目录失败：${formatErrorMessage(error, "请稍后重试")}`);
+            const prefix =
+              deleteConnections && !connectionsDeleted
+                ? "删除文件夹内服务器失败，目录尚未删除"
+                : "删除目录失败";
+            message.error(`${prefix}：${formatErrorMessage(error, "请稍后重试")}`);
             throw error;
+          } finally {
+            // If server deletion stopped part-way through, reflect successful removals even though
+            // the folder itself remains. The shared helper already cleared selection/detail state.
+            await onReloadConnections();
           }
         }
       });
@@ -721,8 +771,8 @@ export const ConnectionManagerV2 = ({
       message,
       modal,
       onReloadConnections,
-      scope.reloadFolders,
-      scopedConnections
+      removeConnections,
+      scope.reloadFolders
     ]
   );
 

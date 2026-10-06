@@ -713,8 +713,7 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     channel: IPCChannel.ConnectionFolderRemove,
     schema: connectionFolderRemoveSchema,
     label: "目录删除",
-    // Children cascade; the connections inside are only detached, never deleted —
-    // and detached connections get re-projected back to their scope root.
+    // Children cascade; the connections inside move to the deleted folder's parent.
     dispatch: (services, input) => {
       services.connectionFolders.remove(input.id);
       return { ok: true as const };

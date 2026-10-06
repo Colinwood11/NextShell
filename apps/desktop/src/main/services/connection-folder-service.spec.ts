@@ -13,8 +13,8 @@ import {
 
 // ── 内存假仓储 ───────────────────────────────────────────────
 // better-sqlite3 是 Electron ABI，测试里连不上真实库；这里复刻两条库语义：
-//   1. 删目录时子目录级联删除、其中连接的 folder_id 置空（ON DELETE CASCADE / SET NULL）；
-//   2. 连接仓储带缓存，① 里那次 folder_id 置空绕过缓存，只有 invalidate 之后才看得见。
+//   1. 删目录时子目录级联删除、其中连接的 folder_id 移到目标父目录；
+//   2. 连接仓储带缓存，① 里那次 folder_id 更新绕过缓存，只有 invalidate 之后才看得见。
 
 const WORKSPACE: CloudSyncWorkspaceProfile = {
   id: "ws-1",
@@ -83,6 +83,7 @@ const createWorld = (folders: ConnectionFolder[], connections: ConnectionProfile
   const folderRows = [...folders];
   const connectionRows = connections.map((row) => ({ ...row }));
   const updates: Array<{ id: string; groupPath: string }> = [];
+  const cloudChanges: string[] = [];
   let cache: ConnectionProfile[] | undefined;
 
   const subtreeIds = (rootId: string): string[] => {
@@ -124,16 +125,18 @@ const createWorld = (folders: ConnectionFolder[], connections: ConnectionProfile
       return { ...row };
     },
     remove: (id: string) => {
+      const deletedFolder = folderRows.find((row) => row.id === id);
+      const parentId = deletedFolder?.parentId;
       const doomed = new Set(subtreeIds(id));
       for (let index = folderRows.length - 1; index >= 0; index--) {
         if (doomed.has(folderRows[index]!.id)) {
           folderRows.splice(index, 1);
         }
       }
-      // 外键 ON DELETE SET NULL：库里直接改，连接缓存看不见这一步。
+      // 目录服务在删除前把连接移到原目录的父级；这一步绕过连接缓存。
       for (const row of connectionRows) {
         if (row.folderId && doomed.has(row.folderId)) {
-          row.folderId = undefined;
+          row.folderId = parentId;
         }
       }
     },
@@ -160,7 +163,8 @@ const createWorld = (folders: ConnectionFolder[], connections: ConnectionProfile
   const service = new ConnectionFolderService({
     folders: folderRepo,
     connections: connectionStore,
-    listCloudWorkspaces: () => [WORKSPACE]
+    listCloudWorkspaces: () => [WORKSPACE],
+    onCloudScopeChanged: (workspaceId) => cloudChanges.push(workspaceId)
   });
 
   const groupPathOf = (id: string) => connectionRows.find((row) => row.id === id)?.groupPath;
@@ -168,7 +172,16 @@ const createWorld = (folders: ConnectionFolder[], connections: ConnectionProfile
   /** 服务的读口径(带缓存那一层),用来验证级联清空后缓存确实重读过。 */
   const visible = (id: string) => connectionStore.list({}).find((row) => row.id === id);
 
-  return { service, updates, groupPathOf, folderIdOf, visible, folderRows, connectionRows };
+  return {
+    service,
+    updates,
+    cloudChanges,
+    groupPathOf,
+    folderIdOf,
+    visible,
+    folderRows,
+    connectionRows
+  };
 };
 
 describe("ConnectionFolderService.rename", () => {
@@ -234,14 +247,20 @@ describe("ConnectionFolderService.move", () => {
 });
 
 describe("ConnectionFolderService.remove", () => {
-  // 目录删除只解绑连接（连接本身不删）：解绑后的连接必须投影回作用域根，
-  // 否则 groupPath 里还留着一个已经不存在的目录名。
-  test("projects detached connections back to the scope root", () => {
+  // 目录删除只移走连接（连接本身不删）：连接要落到被删目录的父级，
+  // 否则会错误地统一跑到作用域根。
+  test("re-homes connections to the deleted folder's parent", () => {
     const world = createWorld(
-      [folder("f-prod", "prod"), folder("f-asia", "asia", "f-prod")],
       [
-        connection("c-top", "/server/prod", "f-prod"),
-        connection("c-leaf", "/server/prod/asia", "f-asia"),
+        folder("f-parent", "parent"),
+        folder("f-prod", "prod", "f-parent"),
+        folder("f-asia", "asia", "f-prod"),
+        folder("f-leaf", "leaf", "f-asia")
+      ],
+      [
+        connection("c-top", "/server/parent/prod", "f-prod"),
+        connection("c-leaf", "/server/parent/prod/asia", "f-asia"),
+        connection("c-deep", "/server/parent/prod/asia/leaf", "f-leaf"),
         connection("c-other", "/server")
       ]
     );
@@ -251,14 +270,29 @@ describe("ConnectionFolderService.remove", () => {
 
     world.service.remove("f-prod");
 
-    expect(world.folderIdOf("c-top")).toBeUndefined();
-    expect(world.folderIdOf("c-leaf")).toBeUndefined();
-    expect(world.groupPathOf("c-top")).toBe("/server");
-    expect(world.groupPathOf("c-leaf")).toBe("/server");
-    expect(world.updates.map((update) => update.id)).toEqual(["c-top", "c-leaf"]);
-    // 级联把 folder_id 置空是绕过连接缓存做的:不让缓存重读,树上这两条还挂在已删除的目录下。
-    expect(world.visible("c-top")?.folderId).toBeUndefined();
-    expect(world.visible("c-leaf")?.folderId).toBeUndefined();
+    expect(world.folderIdOf("c-top")).toBe("f-parent");
+    expect(world.folderIdOf("c-leaf")).toBe("f-parent");
+    expect(world.folderIdOf("c-deep")).toBe("f-parent");
+    expect(world.groupPathOf("c-top")).toBe("/server/parent");
+    expect(world.groupPathOf("c-leaf")).toBe("/server/parent");
+    expect(world.groupPathOf("c-deep")).toBe("/server/parent");
+    expect(world.updates.map((update) => update.id)).toEqual(["c-top", "c-leaf", "c-deep"]);
+    expect(world.folderRows.map((row) => row.id)).toEqual(["f-parent"]);
+    // 目录删除时的 folder_id 更新绕过连接缓存,服务必须在之后让缓存重读。
+    expect(world.visible("c-top")?.folderId).toBe("f-parent");
+    expect(world.visible("c-leaf")?.folderId).toBe("f-parent");
+    expect(world.visible("c-deep")?.folderId).toBe("f-parent");
+  });
+
+  test("does not mark a cloud scope dirty when its connection paths do not change", () => {
+    const world = createWorld(
+      [folder("c-prod", "prod", undefined, CLOUD_SCOPE_KEY)],
+      [connection("cloud-1", "/workspace/team-a", "c-prod", CLOUD_SCOPE_KEY)]
+    );
+
+    world.service.remove("c-prod");
+
+    expect(world.cloudChanges).toEqual([]);
   });
 
   test("does nothing when the folder is already gone", () => {

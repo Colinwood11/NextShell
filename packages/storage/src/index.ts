@@ -1511,9 +1511,9 @@ export interface ConnectionRepository {
   list: (query: ConnectionListQuery) => ConnectionProfile[];
   save: (connection: ConnectionProfile) => void;
   /**
-   * 只改 `group_path` 一列。目录改名/移动/删除后要给整个作用域重投影 groupPath,走
-   * `save()` 的全行 upsert 会把调用方手里那份(可能已经过时的)ConnectionProfile 整体写回,
-   * 把别处刚改过的字段一起覆盖掉。
+   * 只改目录投影字段和更新时间。目录改名/移动/删除后要给整个作用域重投影
+   * groupPath,走 `save()` 的全行 upsert 会把调用方手里那份(可能已经过时的)
+   * ConnectionProfile 整体写回,把别处刚改过的字段一起覆盖掉。
    */
   updateConnectionGroupPath: (id: string, groupPath: string, updatedAt?: string) => void;
   remove: (id: string) => void;
@@ -2740,7 +2740,7 @@ export interface ConnectionFolderRepository {
   /** parentId 为 undefined 表示移到顶层。跨 scope 与成环都会抛错。 */
   move: (id: string, parentId: string | undefined) => ConnectionFolder;
   reorder: (id: string, sortIndex: number) => ConnectionFolder;
-  /** 级联删除子目录;其中的连接 folder_id 置空(连接本身不删)。 */
+  /** 级联删除子目录;其中的连接移到被删目录的原父目录(连接本身不删)。 */
   remove: (id: string) => void;
   /** 目录自身及其所有子目录里的连接数。 */
   countConnections: (id: string) => number;
@@ -2910,7 +2910,29 @@ export class SQLiteConnectionFolderRepository implements ConnectionFolderReposit
   }
 
   remove(id: string): void {
-    this.db.prepare("DELETE FROM connection_folders WHERE id = ?").run(id);
+    const removeFolder = this.db.transaction((folderId: string) => {
+      // Read the parent inside the same transaction as the re-home/delete. The caller must not
+      // be able to supply an arbitrary folder id from another scope (or a stale parent).
+      const folder = this.db
+        .prepare("SELECT parent_id FROM connection_folders WHERE id = ?")
+        .get(folderId) as { parent_id: string | null } | undefined;
+      if (!folder) {
+        return;
+      }
+      const targetParentId = folder.parent_id;
+      this.db
+        .prepare(
+          `WITH RECURSIVE subtree(id) AS (
+           SELECT ?
+           UNION ALL
+           SELECT f.id FROM connection_folders f JOIN subtree s ON f.parent_id = s.id
+         )
+         UPDATE connections SET folder_id = ? WHERE folder_id IN (SELECT id FROM subtree)`
+        )
+        .run(folderId, targetParentId);
+      this.db.prepare("DELETE FROM connection_folders WHERE id = ?").run(folderId);
+    });
+    removeFolder(id);
   }
 
   countConnections(id: string): number {

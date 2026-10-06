@@ -16,7 +16,7 @@ export interface FolderProjectionConnectionStore {
   list: (query: ConnectionListQuery) => ConnectionProfile[];
   /** 定向单列更新;重投影不能走全行 upsert,那会把手里这份可能过时的整条记录写回去。 */
   updateConnectionGroupPath: (id: string, groupPath: string) => void;
-  /** 目录删除时外键级联清空 folder_id,绕过了缓存,必须让缓存重读。 */
+  /** 目录删除时仓储会把连接移到目标父目录,绕过了连接缓存,必须让缓存重读。 */
   invalidateConnections: () => void;
 }
 
@@ -78,10 +78,11 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
   remove(id: string): void {
     // scopeKey 只能在删除前拿:删完这条记录就没了。
     const folder = this.options.folders.getById(id);
-    this.options.folders.remove(id);
     if (!folder) {
+      this.options.folders.remove(id);
       return;
     }
+    this.options.folders.remove(id);
     this.options.connections.invalidateConnections();
     this.reprojectScope(folder.scopeKey);
   }
@@ -96,7 +97,7 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
    * 全量而不是只走子树:`resolveFolderNames` 本来就要沿父链回溯,子树集合还得先算一遍;
    * 一个 scope 的连接量是「用户手工维护的服务器台数」量级,全量比维护一份子树集合更难写错。
    */
-  private reprojectScope(scopeKey: string): void {
+  private reprojectScope(scopeKey: string): boolean {
     const folders = this.options.folders.list(scopeKey);
     const workspace = this.resolveWorkspace(scopeKey);
     const workspaceName = workspace?.workspaceName;
@@ -105,8 +106,7 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
       if (resolveOriginScopeKey(connection) !== scopeKey) {
         continue;
       }
-      // 目录已被删除时 resolveFolderNames 返回空链 → 投影回该 scope 的根,正是
-      // `ON DELETE SET NULL` 之后连接该待的位置。
+      // 目录删除后仓储已把连接移到父级;如果父级本身是顶层,这里自然投影到 scope 根。
       const nextGroupPath = deriveGroupPath({
         scopeKey,
         workspaceName,
@@ -123,6 +123,7 @@ export class ConnectionFolderService implements ConnectionFolderRepository {
         this.options.onCloudScopeChanged?.(workspace.id);
       }
     }
+    return changed;
   }
 
   private resolveWorkspace(scopeKey: string): CloudSyncWorkspaceProfile | undefined {
