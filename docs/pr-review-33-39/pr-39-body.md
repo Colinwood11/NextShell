@@ -14,4 +14,4 @@
 - `pnpm --filter @nextshell/desktop run typecheck`
 - `pnpm --filter @nextshell/storage run typecheck`
 - 多级子目录单测覆盖：`connection-folder-service.spec.ts` 覆盖三层子目录；本次定向管理器/目录/存储测试合计 19 个文件、274 个测试通过。
-- 真实 Electron 确认框（2026-10-06，独立临时 userData）：不勾选时子目录删除、连接移到原父目录；勾选时子目录删除、连接走删除 IPC 且回收站计数增加。证据：`docs/pr-review-33-39/evidence/39-folder-confirm-unchecked.png`、`39-folder-confirm-checked.png`、`ui-pr-review.json`。
+- 真实 Electron 确认框（2026-10-06，独立临时 userData）：不勾选时子目录删除、连接移到原父目录；勾选时子目录删除、连接走删除 IPC 且回收站计数增加。证据：[不勾选](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-confirm-unchecked.png)、[勾选](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/39-folder-confirm-checked.png)、[JSON](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/ui-pr-review.json)。

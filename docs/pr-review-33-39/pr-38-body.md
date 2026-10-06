@@ -15,6 +15,6 @@
 
 - `pnpm exec vitest run apps/desktop/src/renderer/components/ConnectionManagerV2/components/render.test.tsx apps/desktop/src/renderer/components/ConnectionManagerV2`
 - `pnpm --filter @nextshell/desktop run typecheck`
-- 真实 Electron 鼠标双击（2026-10-06，生产构建、独立临时 userData）：`locator.dblclick()` 作用于含两台服务器的文件夹，结果只进入目录并显示两台服务器，没有打开服务器详情/会话。证据：`docs/pr-review-33-39/evidence/38-folder-dblclick.png`。
-- 真实 Electron 云作用域选择：选择 `PR UI Cloud` 后显示 `Cloud UI 127.0.0.1`。证据：`docs/pr-review-33-39/evidence/38-cloud-scope.png`。
+- 真实 Electron 鼠标双击（2026-10-06，生产构建、独立临时 userData）：`locator.dblclick()` 作用于含两台服务器的文件夹，结果只进入目录并显示两台服务器，没有打开服务器详情/会话。证据：[双击目录](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/38-folder-dblclick.png)。
+- 真实 Electron 云作用域选择：选择 `PR UI Cloud` 后显示 `Cloud UI 127.0.0.1`。证据：[云作用域](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/38-cloud-scope.png)。
 - 400ms 延迟深链：contextBridge 的 `workspaceList` 方法为只读，无法安全注入延迟；该异步场景由 renderer regression tests 覆盖，本次不宣称完成真实延迟注入。

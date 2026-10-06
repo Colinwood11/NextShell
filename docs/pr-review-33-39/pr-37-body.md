@@ -12,6 +12,6 @@
 
 - `pnpm exec vitest run apps/desktop/src/main/services/cloud-sync-manager.test.ts apps/desktop/src/main/services/connection-folder-service.spec.ts`
 - `pnpm --filter @nextshell/desktop run typecheck`
-- 设置页真实 Electron 删除操作（2026-10-06，独立临时 userData）：确认框显示“将移除本机的同步配置及该工作区的本地数据，云端工作区不受影响”；确认后 `workspaceList=0`、该工作区连接数为 `0`、物化目录数为 `0`。证据：`docs/pr-review-33-39/evidence/37-confirm.png`、`37-removed.png`、`ui-pr-review.json`。
+- 设置页真实 Electron 删除操作（2026-10-06，独立临时 userData）：确认框显示“将移除本机的同步配置及该工作区的本地数据，云端工作区不受影响”；确认后 `workspaceList=0`、该工作区连接数为 `0`、物化目录数为 `0`。证据：[确认框](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/37-confirm.png)、[删除后](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/37-removed.png)、[JSON](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/evidence/ui-pr-review.json)。
 
 依赖：目录清理使用 #33 引入的目录列举/物化能力；若拆分为独立 PR，请保留 `Depends on #33` 或把所需依赖一并带入。
