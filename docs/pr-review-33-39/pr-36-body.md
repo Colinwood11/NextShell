@@ -11,7 +11,7 @@ SFTP 目录树和文件列表可能超过底部工作区高度，导致内容被
 
 ## Branch hygiene
 
-请从 `upstream/main`（当前基线 `6065921`）单独重提，只保留 `a85bd955c5e49d2958604454e19924421ffafd44` 对应的修复。不要用 merge commit 把 #33、#34、#35 带入。
+本 PR 已从 `upstream/main`（基线 `6065921`）单独重提，只保留 `a85bd955c5e49d2958604454e19924421ffafd44` 对应的修复，没有用 merge commit 带入 #33、#34、#35。
 
 ## Validation
 

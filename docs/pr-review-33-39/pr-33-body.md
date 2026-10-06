@@ -24,4 +24,4 @@
 - `git diff --check`
 - 真实 Electron 补充验证记录与截图：[审查证据](https://github.com/Colinwood11/NextShell/blob/codex/fix-cloud-sync-groups/docs/pr-review-33-39/review-completion.md)。
 
-若全量测试仍受 Windows 文件 URL、Shell 子进程或 screen-mirror 环境影响，请列出实际失败用例和环境，不要写成全量通过。
+`pnpm run test`：130 个文件通过、1 个跳过、3 个失败；1004 个测试中 980 通过、18 跳过、6 失败。失败为 Windows 文件 URL 绝对路径（`navigation-security.test.ts`）、Windows 下 shell 子进程状态为空（`shell-integration-command-text.spec.ts` 的 4 个用例）和 `screen-mirror.test.ts` 60 秒超时，均为当前环境边界。

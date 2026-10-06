@@ -11,5 +11,3 @@ Windows checkout 可能把 shell integration 资源带成 CRLF；这些字节原
 - `pnpm exec vitest run apps/desktop/src/shared/shell-integration/index.spec.ts`（通过）
 - `pnpm --filter @nextshell/desktop run typecheck`
 - Windows 环境不执行 POSIX bash/dash 运行时用例；本次只报告 TypeScript/Vitest 静态与单测结果。
-
-可选补充：增加 `.gitattributes` 将四个脚本固定为 LF。若不增加，该补充不影响本 PR 的运行时修复。
