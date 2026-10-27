@@ -330,9 +330,13 @@ const COMMAND_SECRET_RULES: Array<{ re: RegExp; replace: string }> = [
     re: /(\bsshpass\s+(?:-\S+\s+)*?-p[=\s]+)("[^"]*"|'[^']*'|[^\s]+)/gi,
     replace: `$1${AGENT_REDACTED}`
   },
-  // echo 'secret' | sudo -S …  — the piped-in value is a password by construction
+  // echo 'secret' | sudo -S …  — the piped-in value is a password by construction.
+  // `\S+[ \t]+`, never `\S*\s+`: an empty word lets every whitespace run split
+  // two ways, and over multi-line output (journalctl) the backtracking is
+  // exponential and freezes the main process. Staying on one line also bounds
+  // each attempt to that line instead of the whole output.
   {
-    re: /((?:^|\s)echo\s+)("[^"]*"|'[^']*'|[^\s|]+)(\s*\|\s*(?:\S*\s+)*sudo\s+(?:-\S+\s+)*-S\b)/gi,
+    re: /((?:^|\s)echo\s+)("[^"]*"|'[^']*'|[^\s|]+)([ \t]*\|[ \t]*(?:\S+[ \t]+)*?sudo[ \t]+(?:-\S+[ \t]+)*-S\b)/gi,
     replace: `$1${AGENT_REDACTED}$3`
   }
 ];

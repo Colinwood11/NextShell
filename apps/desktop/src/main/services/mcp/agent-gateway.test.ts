@@ -343,6 +343,47 @@ describe("session discovery", () => {
     expect(serialized).not.toContain("hunter2");
     expect(serialized).not.toContain("abc123def");
   });
+
+  test("redaction stays linear on whitespace-padded output after an `echo … |`", async () => {
+    // journalctl-shaped: one logged `echo … |` then many double-spaced lines.
+    // The old echo|sudo rule backtracked exponentially here (12 lines ≈ 4.5s).
+    const journal = Array.from(
+      { length: 2000 },
+      (_, i) => `Oct  7 11:20:01 web kernel: [${i}]  eth0: link up`
+    ).join("\n");
+    const { gateway } = createHarness({
+      getSessionHistory: () => ({
+        integrationAvailable: true,
+        entries: [
+          {
+            command: "journalctl -n 2000",
+            exitCode: 0,
+            startedAt: TIMESTAMP,
+            finishedAt: TIMESTAMP,
+            output: `sudo: COMMAND=/bin/sh -c echo hi | logger\n${journal}`,
+            truncated: false
+          },
+          {
+            // The old rule also matched across lines, from the first `echo` to
+            // a far-away `sudo -S`, redacting the wrong token.
+            command: "cat log",
+            exitCode: 0,
+            startedAt: TIMESTAMP,
+            finishedAt: TIMESTAMP,
+            output: `echo hi | logger\nok\nrun: echo hunter2 | sudo -S id`,
+            truncated: false
+          }
+        ]
+      })
+    });
+    const started = performance.now();
+    const result = await gateway.sessionHistory(CLIENT, { target: "sess-full" });
+    expect(performance.now() - started).toBeLessThan(1000);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(JSON.stringify(result.data)).not.toContain("hunter2");
+  });
 });
 
 const BACKGROUND = () => withAgentPrefs({ execMode: "background" });
