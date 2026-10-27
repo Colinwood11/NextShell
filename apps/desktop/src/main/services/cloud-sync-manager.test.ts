@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, test, vi } from "vitest";
-import { buildScopeKey } from "@nextshell/core";
+import { buildScopeKey, DEFAULT_APP_PREFERENCES } from "@nextshell/core";
 import type {
+  AppPreferences,
   CloudSyncWorkspaceProfile,
+  ConnectionFolder,
   ConnectionProfile,
   ProxyProfile,
   RecycleBinEntry,
@@ -10,6 +13,7 @@ import type {
   WorkspaceRepoLocalState,
   WorkspaceRepoSnapshot
 } from "@nextshell/core";
+import type { ConnectionFolderRepository } from "@nextshell/storage";
 import { CloudSyncManager, type CloudSyncManagerDeps } from "./cloud-sync-manager";
 
 type WorkspaceSyncResult = WorkspaceRepoLocalState & {
@@ -33,37 +37,7 @@ const createWorkspace = (): CloudSyncWorkspaceProfile => ({
 const createDeps = (
   workspace: CloudSyncWorkspaceProfile,
   password: string | undefined
-): CloudSyncManagerDeps => ({
-  listConnections: (): ConnectionProfile[] => [],
-  saveConnection: (_conn): void => undefined,
-  removeConnection: (_id): void => undefined,
-  listSshKeys: (): SshKeyProfile[] => [],
-  saveSshKey: (_key): void => undefined,
-  removeSshKey: (_id): void => undefined,
-  listProxies: (): ProxyProfile[] => [],
-  saveProxy: (_proxy): void => undefined,
-  removeProxy: (_id): void => undefined,
-  readCredential: async (_ref): Promise<string | undefined> => undefined,
-  storeCredential: async (_name, _secret): Promise<string> => "secret://test",
-  deleteCredential: async (_ref): Promise<void> => undefined,
-  listWorkspaces: (): CloudSyncWorkspaceProfile[] => [workspace],
-  saveWorkspace: (_ws): void => undefined,
-  removeWorkspace: (_id): void => undefined,
-  getWorkspaceRepoLocalState: (_workspaceId: string): WorkspaceRepoLocalState | undefined =>
-    undefined,
-  saveWorkspaceRepoLocalState: (_state: WorkspaceRepoLocalState): void => undefined,
-  listWorkspaceCommands: (_workspaceId: string): WorkspaceCommandItem[] => [],
-  replaceWorkspaceCommands: (_workspaceId: string, _commands: WorkspaceCommandItem[]): void =>
-    undefined,
-  saveRecycleBinEntry: (_entry: RecycleBinEntry): void => undefined,
-  storeWorkspacePassword: async (_workspaceId, _nextPassword): Promise<void> => undefined,
-  getWorkspacePassword: async (_workspaceId): Promise<string | undefined> => password,
-  deleteWorkspacePassword: async (_workspaceId): Promise<void> => undefined,
-  getJsonSetting: <T>(_key: string): T | undefined => undefined,
-  saveJsonSetting: (_key: string, _value: unknown): void => undefined,
-  broadcastStatus: (_status): void => undefined,
-  broadcastApplied: (_workspaceId): void => undefined
-});
+): CloudSyncManagerDeps => createMutableDeps(createMutableState(workspace, { password }));
 
 const now = "2026-03-15T00:00:00.000Z";
 
@@ -108,6 +82,8 @@ interface MutableCloudSyncState {
   connections: ConnectionProfile[];
   sshKeys: SshKeyProfile[];
   proxies: ProxyProfile[];
+  folders: ConnectionFolder[];
+  preferences: AppPreferences;
   commands: WorkspaceCommandItem[];
   localState?: WorkspaceRepoLocalState;
   recycleBin: RecycleBinEntry[];
@@ -123,11 +99,76 @@ const createMutableState = (
   connections: [],
   sshKeys: [],
   proxies: [],
+  folders: [],
+  preferences: {
+    ...DEFAULT_APP_PREFERENCES,
+    ssh: { ...DEFAULT_APP_PREFERENCES.ssh }
+  },
   commands: [],
   recycleBin: [],
   credentials: new Map(),
   ...overrides
 });
+
+const createFolderRepository = (state: MutableCloudSyncState): ConnectionFolderRepository => {
+  const update = (id: string, patch: Partial<ConnectionFolder>): ConnectionFolder => {
+    const current = state.folders.find((folder) => folder.id === id);
+    if (!current) throw new Error(`Folder not found: ${id}`);
+    const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    state.folders = state.folders.map((folder) => (folder.id === id ? next : folder));
+    return next;
+  };
+  const descendants = (id: string): Set<string> => {
+    const ids = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const folder of state.folders) {
+        if (folder.parentId && ids.has(folder.parentId) && !ids.has(folder.id)) {
+          ids.add(folder.id);
+          changed = true;
+        }
+      }
+    }
+    return ids;
+  };
+  return {
+    list: (scopeKey) => state.folders.filter((folder) => !scopeKey || folder.scopeKey === scopeKey),
+    getById: (id) => state.folders.find((folder) => folder.id === id),
+    create: (input) => {
+      const timestamp = new Date().toISOString();
+      const folder: ConnectionFolder = {
+        id: randomUUID(),
+        scopeKey: input.scopeKey,
+        parentId: input.parentId,
+        name: input.name,
+        sortIndex: input.sortIndex ?? 0,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      state.folders = [...state.folders, folder];
+      return folder;
+    },
+    rename: (id, name) => update(id, { name }),
+    move: (id, parentId) => update(id, { parentId }),
+    reorder: (id, sortIndex) => update(id, { sortIndex }),
+    remove: (id) => {
+      const removed = descendants(id);
+      state.folders = state.folders.filter((folder) => !removed.has(folder.id));
+      state.connections = state.connections.map((connection) =>
+        connection.folderId && removed.has(connection.folderId)
+          ? { ...connection, folderId: undefined }
+          : connection
+      );
+    },
+    countConnections: (id) => {
+      const ids = descendants(id);
+      return state.connections.filter(
+        (connection) => connection.folderId && ids.has(connection.folderId)
+      ).length;
+    }
+  };
+};
 
 const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps => ({
   listConnections: (): ConnectionProfile[] => state.connections,
@@ -151,6 +192,7 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
   removeProxy: (id): void => {
     state.proxies = state.proxies.filter((item) => item.id !== id);
   },
+  connectionFolders: createFolderRepository(state),
   readCredential: async (ref): Promise<string | undefined> => state.credentials.get(ref),
   storeCredential: async (name, secret): Promise<string> => {
     const ref = `secret://${name}`;
@@ -183,6 +225,10 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
   getWorkspacePassword: async (_workspaceId): Promise<string | undefined> => state.password,
   deleteWorkspacePassword: async (_workspaceId): Promise<void> => {
     state.password = undefined;
+  },
+  getAppPreferences: () => state.preferences,
+  saveAppPreferences: (preferences): void => {
+    state.preferences = preferences;
   },
   getJsonSetting: <T>(_key: string): T | undefined => undefined,
   saveJsonSetting: (_key: string, _value: unknown): void => undefined,
@@ -805,6 +851,42 @@ describe("CloudSyncManager workspace repo sync", () => {
 
     expect(after).not.toBe(before);
   });
+
+  test("folder and global SSH setting changes update the workspace fingerprint", () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
+    const state = createMutableState(workspace, {
+      folders: [
+        {
+          id: "folder-1",
+          scopeKey,
+          name: "prod",
+          sortIndex: 0,
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    });
+    const manager = new CloudSyncManager(createMutableDeps(state)) as unknown as {
+      workspaceFingerprint: (workspaceId: string) => string;
+    };
+    const initial = manager.workspaceFingerprint(workspace.id);
+
+    state.folders = [{ ...state.folders[0]!, updatedAt: "2026-03-16T00:00:00.000Z" }];
+    const afterFolderChange = manager.workspaceFingerprint(workspace.id);
+    state.preferences = {
+      ...state.preferences,
+      ssh: { ...state.preferences.ssh, keepAliveIntervalSec: 45 }
+    };
+    const afterSettingsChange = manager.workspaceFingerprint(workspace.id);
+
+    expect(afterFolderChange).not.toBe(initial);
+    expect(afterSettingsChange).not.toBe(afterFolderChange);
+  });
 });
 
 describe("CloudSyncManager applyWorkspaceSnapshot", () => {
@@ -814,9 +896,7 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
     snapshot: WorkspaceRepoSnapshot
   ) => Promise<void>;
 
-  // folderId 不在线协议里,是本地的目录归属;saveConnection 是全行 upsert,重建 profile 时
-  // 漏掉这个键就等于每次 pull 都把云连接的目录清空。
-  test("keeps the local folderId of an existing cloud connection across a pull", async () => {
+  test("keeps local folderId and monitoring when pulling a legacy snapshot", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
     const scopeKey = buildScopeKey({
       kind: "cloud",
@@ -835,7 +915,7 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
       folderId: "folder-asia",
       tags: [],
       favorite: false,
-      monitorSession: false,
+      monitorSession: true,
       terminalEncoding: "utf-8",
       backspaceMode: "ascii-backspace",
       deleteMode: "vt220-delete",
@@ -861,6 +941,7 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
     const applied = state.connections.find((connection) => connection.uuidInScope === "conn-1");
     expect(applied?.host).toBe("new.example.com");
     expect(applied?.folderId).toBe("folder-asia");
+    expect(applied?.monitorSession).toBe(true);
   });
 
   test("leaves folderId empty for a connection this device has never seen", async () => {
@@ -877,6 +958,235 @@ describe("CloudSyncManager applyWorkspaceSnapshot", () => {
     );
 
     expect(state.connections[0]?.folderId).toBeUndefined();
+  });
+
+  test("round-trips monitoring, folders, key metadata and SSH settings between devices", async () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
+    const source = createMutableState(workspace, {
+      folders: [
+        {
+          id: "folder-asia",
+          scopeKey,
+          name: "asia",
+          sortIndex: 1,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: "folder-db",
+          scopeKey,
+          parentId: "folder-asia",
+          name: "db",
+          sortIndex: 2,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: "folder-empty",
+          scopeKey,
+          name: "empty",
+          sortIndex: 7,
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
+      sshKeys: [
+        {
+          id: "local-key",
+          name: "Deploy key",
+          keyContentRef: "secret://source-key",
+          keyType: "ssh-ed25519",
+          keyBits: 256,
+          keyComment: "ops@example.com",
+          fingerprint: "SHA256:abc",
+          publicKeyLine: "ssh-ed25519 AAA ops@example.com",
+          createdAt: now,
+          updatedAt: now,
+          uuidInScope: "key-uuid",
+          originKind: "cloud",
+          originScopeKey: scopeKey,
+          originWorkspaceId: workspace.id
+        }
+      ],
+      connections: [
+        {
+          id: "local-conn",
+          name: "Database",
+          host: "db.example.com",
+          port: 22,
+          username: "root",
+          authType: "privateKey",
+          sshKeyId: "local-key",
+          strictHostKeyChecking: false,
+          groupPath: "/workspace/prod-team/asia/db",
+          folderId: "folder-db",
+          tags: [],
+          favorite: false,
+          monitorSession: true,
+          terminalEncoding: "utf-8",
+          backspaceMode: "ascii-backspace",
+          deleteMode: "vt220-delete",
+          createdAt: now,
+          updatedAt: now,
+          uuidInScope: "conn-uuid",
+          originKind: "cloud",
+          originScopeKey: scopeKey,
+          originWorkspaceId: workspace.id
+        }
+      ]
+    });
+    source.credentials.set("secret://source-key", "PRIVATE KEY");
+    source.preferences = {
+      ...source.preferences,
+      ssh: { keepAliveEnabled: false, keepAliveIntervalSec: 45 }
+    };
+    const sourceManager = new CloudSyncManager(createMutableDeps(source)) as unknown as {
+      buildWorkspaceSnapshot: (
+        workspace: CloudSyncWorkspaceProfile,
+        workspacePassword: string
+      ) => Promise<WorkspaceRepoSnapshot>;
+    };
+    const snapshot = await sourceManager.buildWorkspaceSnapshot(workspace, "workspace-password");
+    const destination = createMutableState(workspace);
+    const destinationManager = new CloudSyncManager(createMutableDeps(destination));
+
+    await (
+      destinationManager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }
+    ).applyWorkspaceSnapshot(workspace, "workspace-password", snapshot);
+
+    const appliedConnection = destination.connections[0];
+    const appliedKey = destination.sshKeys[0];
+    const dbFolder = destination.folders.find((folder) => folder.name === "db");
+    expect(appliedConnection).toMatchObject({
+      monitorSession: true,
+      folderId: dbFolder?.id,
+      groupPath: "/workspace/prod-team/asia/db"
+    });
+    expect(appliedKey).toMatchObject({
+      keyType: "ssh-ed25519",
+      keyBits: 256,
+      keyComment: "ops@example.com",
+      fingerprint: "SHA256:abc",
+      publicKeyLine: "ssh-ed25519 AAA ops@example.com"
+    });
+    expect(destination.folders.find((folder) => folder.name === "empty")?.sortIndex).toBe(7);
+    expect(destination.preferences.ssh).toEqual({
+      keepAliveEnabled: false,
+      keepAliveIntervalSec: 45
+    });
+    expect(destination.preferences.terminal).toEqual(DEFAULT_APP_PREFERENCES.terminal);
+
+    const remoteKey = snapshot.sshKeys[0]!;
+    const remoteConnection = snapshot.connections[0]!;
+    const legacySnapshot: WorkspaceRepoSnapshot = {
+      ...snapshot,
+      folders: undefined,
+      sshSettings: undefined,
+      connections: [{ ...remoteConnection, monitorSession: undefined }],
+      sshKeys: [
+        {
+          uuid: remoteKey.uuid,
+          name: remoteKey.name,
+          privateKey: remoteKey.privateKey,
+          createdAt: remoteKey.createdAt,
+          updatedAt: remoteKey.updatedAt
+        }
+      ]
+    };
+    await (
+      destinationManager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }
+    ).applyWorkspaceSnapshot(workspace, "workspace-password", legacySnapshot);
+
+    expect(destination.connections[0]).toMatchObject({
+      monitorSession: true,
+      folderId: dbFolder?.id
+    });
+    expect(destination.sshKeys[0]).toMatchObject({
+      keyType: "ssh-ed25519",
+      keyBits: 256,
+      keyComment: "ops@example.com",
+      fingerprint: "SHA256:abc",
+      publicKeyLine: "ssh-ed25519 AAA ops@example.com"
+    });
+  });
+
+  test("adopts folders by path, moves an existing connection and removes stale folders", async () => {
+    const workspace = { ...createWorkspace(), enabled: true };
+    const scopeKey = buildScopeKey({
+      kind: "cloud",
+      apiBaseUrl: workspace.apiBaseUrl,
+      workspaceName: workspace.workspaceName
+    });
+    const state = createMutableState(workspace, {
+      folders: [
+        {
+          id: "local-old",
+          scopeKey,
+          name: "old",
+          sortIndex: 0,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: "local-target",
+          scopeKey,
+          name: "target",
+          sortIndex: 0,
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
+      connections: [
+        {
+          ...snapshotConnection("conn-1", "Prod", "old.example.com"),
+          id: "local-id",
+          authType: "agent",
+          credentialRef: undefined,
+          groupPath: "/workspace/prod-team/old",
+          folderId: "local-old",
+          monitorSession: true,
+          originKind: "cloud",
+          originScopeKey: scopeKey,
+          originWorkspaceId: workspace.id
+        }
+      ]
+    });
+    const manager = new CloudSyncManager(createMutableDeps(state));
+    const snapshot = repoSnapshot(workspace.id, "remote-folders", [
+      {
+        ...snapshotConnection("conn-1", "Prod", "new.example.com"),
+        groupPath: "/workspace/prod-team/target",
+        monitorSession: false
+      }
+    ]);
+    snapshot.folders = [
+      {
+        uuid: "remote-target",
+        name: "target",
+        sortIndex: 3,
+        createdAt: now,
+        updatedAt: now
+      }
+    ];
+
+    await (manager as unknown as { applyWorkspaceSnapshot: ApplySnapshot }).applyWorkspaceSnapshot(
+      workspace,
+      "workspace-password",
+      snapshot
+    );
+
+    expect(state.connections[0]).toMatchObject({
+      folderId: "local-target",
+      groupPath: "/workspace/prod-team/target",
+      monitorSession: false
+    });
+    expect(state.folders).toHaveLength(1);
+    expect(state.folders[0]).toMatchObject({ id: "local-target", sortIndex: 3 });
   });
 
   test("moves resources deleted remotely into the recycle bin", async () => {

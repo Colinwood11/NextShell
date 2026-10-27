@@ -620,6 +620,7 @@ export const createServiceContainer = async (
     listProxies: () => proxyRepo.list(),
     saveProxy: (proxy) => proxyRepo.save(proxy),
     removeProxy: (id) => proxyRepo.remove(id),
+    connectionFolders: folderRepo,
     readCredential: async (ref) => {
       try {
         return await vault.readCredential(ref);
@@ -651,6 +652,8 @@ export const createServiceContainer = async (
     deleteWorkspacePassword: async (wId) => {
       await vault.deleteCredential(cloudSyncWorkspacePasswordRef(wId)).catch(() => {});
     },
+    getAppPreferences: () => connections.getAppPreferences(),
+    saveAppPreferences: (preferences) => connections.saveAppPreferences(preferences),
     getJsonSetting: (key) => connections.getJsonSetting(key),
     saveJsonSetting: (key, value) => connections.saveJsonSetting(key, value),
     broadcastStatus: (status) => broadcastToAllWindows(IPCChannel.CloudSyncStatusEvent, status),

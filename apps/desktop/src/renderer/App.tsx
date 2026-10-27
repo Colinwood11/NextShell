@@ -309,11 +309,12 @@ export const App = () => {
   useEffect(() => {
     const unsubscribe = window.nextshell.cloudSync.onApplied(() => {
       void refreshSyncResources();
+      void initializePreferences();
     });
     return () => {
       unsubscribe();
     };
-  }, [refreshSyncResources]);
+  }, [initializePreferences, refreshSyncResources]);
 
   // Transfer status events
   useEffect(() => {

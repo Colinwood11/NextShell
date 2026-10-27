@@ -18,16 +18,19 @@
 /* ── Left: directory tree ── */
 .fe-tree-panel {
   width: 170px;
+  min-height: 0;
   flex-shrink: 0;
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-mid) transparent;
   padding: 4px 0;
 }
 
 .fe-tree-panel::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 .fe-tree-panel::-webkit-scrollbar-thumb {
   background: var(--border-mid);
@@ -201,6 +204,42 @@
 .fe-table-wrap .ant-table-body {
   background: transparent !important;
   font-size: 12px;
+}
+
+.fe-table-wrap .ant-table-body,
+.fe-table-wrap .ant-table-tbody-virtual-holder {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-mid) transparent;
+}
+
+.fe-table-wrap .ant-table-body::-webkit-scrollbar,
+.fe-table-wrap .ant-table-tbody-virtual-holder::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.fe-table-wrap .ant-table-body::-webkit-scrollbar-thumb,
+.fe-table-wrap .ant-table-tbody-virtual-holder::-webkit-scrollbar-thumb {
+  background: var(--border-mid);
+  border-radius: 4px;
+}
+
+.fe-table-wrap .ant-table-body::-webkit-scrollbar-track,
+.fe-table-wrap .ant-table-tbody-virtual-holder::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fe-table-wrap .ant-table-tbody-virtual-scrollbar {
+  background: transparent;
+}
+
+.fe-table-wrap .ant-table-tbody-virtual-scrollbar-thumb {
+  background: var(--border-mid);
+}
+
+.fe-table-wrap .ant-table-tbody-virtual-scrollbar-thumb:hover,
+.fe-table-wrap .ant-table-tbody-virtual-scrollbar-thumb-active {
+  background: var(--t3);
 }
 
 .fe-table-wrap .ant-table-header {

@@ -36,6 +36,7 @@ const repoConnectionSchema = z.object({
   tags: z.array(z.string()).default([]),
   notes: z.string().optional(),
   favorite: z.boolean(),
+  monitorSession: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -45,6 +46,11 @@ const repoSshKeySchema = z.object({
   name: z.string(),
   privateKey: workspaceSecretEnvelopeSchema,
   passphrase: workspaceSecretEnvelopeSchema.optional(),
+  keyType: z.string().optional(),
+  keyBits: z.number().int().optional(),
+  keyComment: z.string().optional(),
+  fingerprint: z.string().optional(),
+  publicKeyLine: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -61,13 +67,29 @@ const repoProxySchema = z.object({
   updatedAt: z.string()
 });
 
+const repoFolderSchema = z.object({
+  uuid: z.string(),
+  parentUuid: z.string().optional(),
+  name: z.string(),
+  sortIndex: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
 const repoSnapshotSchema = z.object({
   workspaceId: z.string().optional(),
   snapshotId: z.string(),
   createdAt: z.string(),
   connections: z.array(repoConnectionSchema).default([]),
   sshKeys: z.array(repoSshKeySchema).default([]),
-  proxies: z.array(repoProxySchema).default([])
+  proxies: z.array(repoProxySchema).default([]),
+  folders: z.array(repoFolderSchema).optional(),
+  sshSettings: z
+    .object({
+      keepAliveEnabled: z.boolean(),
+      keepAliveIntervalSec: z.number().int().min(5).max(600)
+    })
+    .optional()
 });
 
 const workspaceCommandItemSchema = z.object({

@@ -65,6 +65,7 @@ export interface WorkspaceRepoConnectionSnapshotItem {
   tags: string[];
   notes?: string;
   favorite: boolean;
+  monitorSession?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,6 +75,11 @@ export interface WorkspaceRepoSshKeySnapshotItem {
   name: string;
   privateKey: WorkspaceSecretEnvelopeShape;
   passphrase?: WorkspaceSecretEnvelopeShape;
+  keyType?: string;
+  keyBits?: number;
+  keyComment?: string;
+  fingerprint?: string;
+  publicKeyLine?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -90,6 +96,20 @@ export interface WorkspaceRepoProxySnapshotItem {
   updatedAt: string;
 }
 
+export interface WorkspaceRepoFolderSnapshotItem {
+  uuid: string;
+  parentUuid?: string;
+  name: string;
+  sortIndex: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceRepoSshSettingsSnapshot {
+  keepAliveEnabled: boolean;
+  keepAliveIntervalSec: number;
+}
+
 export interface WorkspaceRepoSnapshot {
   workspaceId: string;
   snapshotId: string;
@@ -97,6 +117,8 @@ export interface WorkspaceRepoSnapshot {
   connections: WorkspaceRepoConnectionSnapshotItem[];
   sshKeys: WorkspaceRepoSshKeySnapshotItem[];
   proxies: WorkspaceRepoProxySnapshotItem[];
+  folders?: WorkspaceRepoFolderSnapshotItem[];
+  sshSettings?: WorkspaceRepoSshSettingsSnapshot;
 }
 
 export interface WorkspaceRepoLocalState {
