@@ -247,8 +247,11 @@ export interface AgentGatewayDeps {
     output: string;
     truncated: boolean;
   } | null>;
-  /** Brings the tab to the front and raises the window. */
-  focusSession: (sessionId: string) => void;
+  /**
+   * Selects the session's tab. `raise: false` skips showing and focusing the
+   * window, so a later foreground command does not steal the keyboard.
+   */
+  focusSession: (sessionId: string, options?: { raise?: boolean }) => void;
   /** Tells the GUI which session an agent is driving, so the tab can be badged. */
   setSessionAgentControlled: (sessionId: string, clientName: string | null) => void;
   clearSessionAgentControlled: (sessionId: string) => void;
@@ -486,6 +489,12 @@ export class AgentGateway {
   private readonly openBroker: AgentOpenBroker;
   /** exec requests awaiting the user's click, keyed by the broker's request id. */
   private readonly pendingExec = new Map<string, PinnedExec>();
+  /**
+   * The first foreground command raises the window so the user sees the
+   * takeover. Later ones only select the tab: focusing again pops the window
+   * over whatever the user is typing.
+   */
+  private foregroundWindowRaised = false;
 
   constructor(deps: AgentGatewayDeps) {
     this.deps = deps;
@@ -1108,9 +1117,10 @@ export class AgentGateway {
   /**
    * The one way to run a command. Two things about it are the user's choice in
    * NextShell, never the agent's: *how* it runs (`agent.execMode` — foreground
-   * types it into the tab, raises the window and waits for OSC 133 `D`;
-   * background uses a fresh exec channel; a local shell always runs in the
-   * foreground) and *whether it runs at all* (`agent.execApproval` — `permission`
+   * types it into the tab and waits for OSC 133 `D`; the window is raised only
+   * on the first foreground command, later ones keep the tab selected without
+   * stealing focus; background uses a fresh exec channel; a local shell always
+   * runs in the foreground) and *whether it runs at all* (`agent.execApproval` — `permission`
    * puts every command in front of the user first, `auto`, the default, trusts
    * the harness's own approval). The blacklist and the `.env` consent gate apply in every
    * combination; only the foreground path shares a keyboard with a human and
@@ -1310,8 +1320,11 @@ export class AgentGateway {
     // Subscribed before the write so a fast command cannot complete in the
     // gap between injecting and starting to listen.
     const completion = this.deps.waitForCommandCompletion(session.id, waitMs);
-    // Foreground means the user watches: bring the tab forward first.
-    this.deps.focusSession(session.id);
+    // One raise for the whole process: the first foreground command shows the
+    // takeover, and every command after that only selects the tab.
+    const raise = !this.foregroundWindowRaised;
+    this.foregroundWindowRaised = true;
+    this.deps.focusSession(session.id, { raise });
     this.deps.setSessionAgentControlled(session.id, client.name);
     try {
       this.deps.writeSession(session.id, `${command}\r`);

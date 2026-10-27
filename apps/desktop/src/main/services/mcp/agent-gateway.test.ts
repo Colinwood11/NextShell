@@ -473,6 +473,42 @@ describe("exec in the foreground (default)", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
+  test("raises the window on the first foreground command and only selects the tab after that", async () => {
+    const focused: Array<{ sessionId: string; raise?: boolean }> = [];
+    let pending: string | null = "vim /etc/nginx.conf";
+    const { gateway } = createHarness({
+      pendingInput: async () => pending,
+      focusSession: (sessionId, options) => focused.push({ sessionId, raise: options?.raise }),
+      waitForCommandCompletion: async () => ({
+        command: "ls",
+        exitCode: 0,
+        output: "",
+        truncated: false
+      })
+    });
+
+    // A blocked command never showed the window, so it must not spend the one raise.
+    const blocked = await gateway.execCommand(CLIENT, { target: "sess-full", command: "ls" });
+    expect(blocked.ok).toBe(false);
+    expect(focused).toEqual([]);
+
+    pending = "";
+    await gateway.execCommand(CLIENT, { target: "sess-full", command: "ls" });
+    await gateway.execCommand(CLIENT, { target: "sess-full", command: "pwd" });
+    await gateway.execCommand(CLIENT, { target: "sess-stage", command: "uptime" });
+
+    expect(focused).toEqual([
+      { sessionId: "sess-full", raise: true },
+      { sessionId: "sess-full", raise: false },
+      { sessionId: "sess-stage", raise: false }
+    ]);
+
+    // session_focus is an explicit handoff and still raises.
+    focused.length = 0;
+    await gateway.focusSession(CLIENT, { target: "sess-stage" });
+    expect(focused).toEqual([{ sessionId: "sess-stage", raise: undefined }]);
+  });
+
   test("reports waitTimedOut with an unknown exit code when no completion mark arrives", async () => {
     const { gateway } = createHarness();
     const result = await gateway.execCommand(CLIENT, { target: "sess-full", command: "ls" });

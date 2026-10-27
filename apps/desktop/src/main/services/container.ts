@@ -683,9 +683,14 @@ export const createServiceContainer = async (
   });
 
   // ─── Agent (MCP) Endpoint ────────────────────────────────────────────────
-  const raiseMainWindow = (): BrowserWindow | undefined => {
+  const currentMainWindow = (): BrowserWindow | undefined => {
     const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     if (!target || target.isDestroyed()) return undefined;
+    return target;
+  };
+  const raiseMainWindow = (): BrowserWindow | undefined => {
+    const target = currentMainWindow();
+    if (!target) return undefined;
     if (target.isMinimized()) target.restore();
     target.show();
     target.focus();
@@ -739,8 +744,9 @@ export const createServiceContainer = async (
         truncated: entry.truncated
       };
     },
-    focusSession: (sessionId) => {
-      raiseMainWindow()?.webContents.send(IPCChannel.AgentSessionFocusEvent, { sessionId });
+    focusSession: (sessionId, options) => {
+      const target = options?.raise === false ? currentMainWindow() : raiseMainWindow();
+      target?.webContents.send(IPCChannel.AgentSessionFocusEvent, { sessionId });
     },
     requestOpenSession: (request) => {
       // The dialog is useless unseen: raise the window, then show it everywhere.

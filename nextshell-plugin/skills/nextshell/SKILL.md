@@ -17,8 +17,9 @@ You never see a password or key; you only get session ids and command output.
    ask the user to confirm in NextShell; never retry on your own.
 2. `exec` — the only way to run a command. **How** it runs is the user's switch in
    NextShell's Agent panel, not your decision and not a parameter:
-   - foreground (default): typed into the tab, NextShell comes to the front, the user
-     watches it run in their real shell; the call waits up to 120s for the prompt to return.
+   - foreground (default): typed into the tab. The window comes to the front only
+     on the first command; later commands do not steal focus. The call waits up
+     to 120s for the prompt to return.
    - background: a fresh SSH channel of the same connection, invisible in the tab,
      returns stdout/stderr. Local shell tabs always run in the foreground.
      Read `mode` in the response to know which happened. `waitTimedOut: true` means the
