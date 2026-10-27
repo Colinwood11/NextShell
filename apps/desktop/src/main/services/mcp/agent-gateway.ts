@@ -293,26 +293,46 @@ const OPEN_WAIT_MS = 50_000;
 /** Slack between a foreground wait deadline and the enclosing call timeout. */
 const WAIT_FOR_PROMPT_HEADROOM_MS = 5_000;
 
-/** Keep command text safe before returning it through the agent endpoint. */
-const COMMAND_SECRET_RULES: Array<{ re: RegExp; replace: string }> = [
+type SecretRule = { re: RegExp; replace: string };
+
+/**
+ * Secret shapes that occur in any text, so they also run over bulk output
+ * (exec results, history output; up to 512 KB). Every rule here must stay
+ * linear: an unanchored leading `[class]*` rescans a long token from each of
+ * its positions (O(n²), seconds on an 80 KB base64 blob), so those rules start
+ * only at a token boundary — where the leftmost match begins anyway.
+ */
+const OUTPUT_SECRET_RULES: SecretRule[] = [
   {
     re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
     replace: AGENT_REDACTED
   },
   { re: /(bearer\s+)[A-Za-z0-9._\-+/=]+/gi, replace: `$1${AGENT_REDACTED}` },
+  // FOO_PASSWORD=secret / AWS_SECRET_ACCESS_KEY=secret / api-key="secret"
+  {
+    re: /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]*(?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|access[_-]?key|passphrase|credential|auth)[A-Za-z0-9_.-]*\s*=\s*)("[^"]*"|'[^']*'|[^\s]+)/gi,
+    replace: `$1${AGENT_REDACTED}`
+  },
+  // scheme://user:password@host
+  {
+    re: /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+(@)/gi,
+    replace: `$1${AGENT_REDACTED}$2`
+  }
+];
+
+/**
+ * Command-line shapes on top of the output ones. Only for short text a person
+ * typed — history commands, the unsubmitted prompt line, the screen, saved
+ * commands. Over arbitrary output they misfire (`uname -a;`) for no gain.
+ */
+const COMMAND_SECRET_RULES: SecretRule[] = [
+  ...OUTPUT_SECRET_RULES,
   {
     re: /\b(pass(?:word|wd)?|pwd|token|secret|api[_-]?key|access[_-]?key|passphrase|auth)\b(\s*[=:]\s*)("?)([^\s"']+)\3/gi,
     replace: `$1$2${AGENT_REDACTED}`
   },
   { re: /(--(?:password|token)[=\s])[^\s'"]+/gi, replace: `$1${AGENT_REDACTED}` },
   { re: /(^|\s)(-[pa])[^\s'"]+/g, replace: `$1$2${AGENT_REDACTED}` },
-  // FOO_PASSWORD=secret / AWS_SECRET_ACCESS_KEY=secret / api-key="secret"
-  {
-    re: /([A-Za-z0-9_.-]*(?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|access[_-]?key|passphrase|credential|auth)[A-Za-z0-9_.-]*\s*=\s*)("[^"]*"|'[^']*'|[^\s]+)/gi,
-    replace: `$1${AGENT_REDACTED}`
-  },
-  // scheme://user:password@host
-  { re: /([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+(@)/gi, replace: `$1${AGENT_REDACTED}$2` },
   // curl -u user:password — only the `user:pass` form; a bare `-u user` prompts.
   {
     re: /((?:^|\s)(?:-u|--user)[=\s]+["']?[^\s:"']+:)[^\s"']+/g,
@@ -341,13 +361,15 @@ const COMMAND_SECRET_RULES: Array<{ re: RegExp; replace: string }> = [
   }
 ];
 
-const redactText = (value: string): string => {
+const redactWith = (rules: SecretRule[], value: string): string => {
   let out = value;
-  for (const rule of COMMAND_SECRET_RULES) {
+  for (const rule of rules) {
     out = out.replace(rule.re, rule.replace);
   }
   return out;
 };
+const redactCommand = (value: string): string => redactWith(COMMAND_SECRET_RULES, value);
+const redactOutput = (value: string): string => redactWith(OUTPUT_SECRET_RULES, value);
 
 const clampInt = (
   value: number | undefined,
@@ -547,7 +569,7 @@ export class AgentGateway {
     const modeTag =
       params.mode === "background" ? "[后台] " : params.mode === "foreground" ? "[前台] " : "";
     const commandSummary =
-      typeof params.command === "string" ? `${modeTag}${redactText(params.command)}` : undefined;
+      typeof params.command === "string" ? `${modeTag}${redactCommand(params.command)}` : undefined;
     this.emitActivity(client, activityId, tool, "running", connectionId, commandSummary);
 
     if (this.halted) {
@@ -722,7 +744,7 @@ export class AgentGateway {
       return {
         code: "human_intervention",
         message: `The user has unsubmitted text on the command line (${JSON.stringify(
-          redactText(pending).slice(0, 40)
+          redactCommand(pending).slice(0, 40)
         )}); stop and report to the user instead of typing over it`
       };
     }
@@ -941,8 +963,8 @@ export class AgentGateway {
         }
         const entries = snapshot.entries.slice(-limit).map((entry) => ({
           ...entry,
-          command: entry.command === null ? null : redactText(entry.command),
-          output: redactText(
+          command: entry.command === null ? null : redactCommand(entry.command),
+          output: redactOutput(
             input.stripAnsi ? entry.output.replace(ANSI_ESCAPE_PATTERN, "") : entry.output
           )
         }));
@@ -997,7 +1019,7 @@ export class AgentGateway {
               "This session is not being mirrored yet; it has produced no output since NextShell started tracking it, or the screen-mirror capacity is exhausted"
           });
         }
-        return { sessionId: session.id, ...screen, content: redactText(screen.content) };
+        return { sessionId: session.id, ...screen, content: redactCommand(screen.content) };
       },
       { connectionId: session.connectionId ?? undefined }
     );
@@ -1028,7 +1050,7 @@ export class AgentGateway {
         }
         matches.push({
           id: item.id,
-          command: redactText(item.command),
+          command: redactCommand(item.command),
           name: item.name,
           group: item.group,
           appendCr: item.appendCr ?? false,
@@ -1261,10 +1283,10 @@ export class AgentGateway {
         return {
           sessionId: session.id,
           mode,
-          command: redactText(command),
+          command,
           exitCode: result.exitCode,
-          output: redactText(result.stdout),
-          stderr: redactText(result.stderr),
+          output: redactOutput(result.stdout),
+          stderr: redactOutput(result.stderr),
           waitTimedOut: false,
           actualCwd: result.cwd ?? cwd ?? null
         };
@@ -1297,9 +1319,9 @@ export class AgentGateway {
       return {
         sessionId: session.id,
         mode,
-        command: redactText(command),
+        command,
         exitCode: settled?.exitCode ?? null,
-        output: settled ? redactText(settled.output) : "",
+        output: settled ? redactOutput(settled.output) : "",
         stderr: null,
         waitTimedOut: settled === null,
         actualCwd: null

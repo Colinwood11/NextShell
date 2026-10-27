@@ -344,33 +344,48 @@ describe("session discovery", () => {
     expect(serialized).not.toContain("abc123def");
   });
 
-  test("redaction stays linear on whitespace-padded output after an `echo … |`", async () => {
+  test("session_read redacts typed commands and stays linear on padded multi-line screens", async () => {
     // journalctl-shaped: one logged `echo … |` then many double-spaced lines.
-    // The old echo|sudo rule backtracked exponentially here (12 lines ≈ 4.5s).
+    // The old echo|sudo rule backtracked exponentially here (12 lines ≈ 4.5s),
+    // and matched across lines from the first `echo` to a far `sudo -S`.
     const journal = Array.from(
       { length: 2000 },
       (_, i) => `Oct  7 11:20:01 web kernel: [${i}]  eth0: link up`
     ).join("\n");
+    const content = `sudo: COMMAND=/bin/sh -c echo hi | logger\n${journal}\n$ echo hunter2 | sudo -S id`;
+    const { gateway } = createHarness({
+      readSessionScreen: async () => ({
+        mode: "scrollback",
+        content,
+        lines: 2002,
+        cols: 140,
+        rows: 40,
+        scrollbackLines: 1962,
+        truncated: false
+      })
+    });
+    const started = performance.now();
+    const result = await gateway.readSessionScreen(CLIENT, { target: "sess-full" });
+    expect(performance.now() - started).toBeLessThan(1000);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.content).not.toContain("hunter2");
+    expect(result.data.content).toContain("echo hi | logger");
+  });
+
+  test("history output gets only the output-shaped rules, linearly", async () => {
     const { gateway } = createHarness({
       getSessionHistory: () => ({
         integrationAvailable: true,
         entries: [
           {
-            command: "journalctl -n 2000",
+            command: "cat dump",
             exitCode: 0,
             startedAt: TIMESTAMP,
             finishedAt: TIMESTAMP,
-            output: `sudo: COMMAND=/bin/sh -c echo hi | logger\n${journal}`,
-            truncated: false
-          },
-          {
-            // The old rule also matched across lines, from the first `echo` to
-            // a far-away `sudo -S`, redacting the wrong token.
-            command: "cat log",
-            exitCode: 0,
-            startedAt: TIMESTAMP,
-            finishedAt: TIMESTAMP,
-            output: `echo hi | logger\nok\nrun: echo hunter2 | sudo -S id`,
+            // A long token used to cost O(n²) in the KEY=value and URL rules.
+            output: `${"Q".repeat(200_000)}\nuname -a; hostname\nDB_PASSWORD=hunter2\npostgres://app:s3cret@db`,
             truncated: false
           }
         ]
@@ -382,13 +397,39 @@ describe("session discovery", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(JSON.stringify(result.data)).not.toContain("hunter2");
+    const output = result.data.entries[0]?.output ?? "";
+    expect(output).toContain("uname -a; hostname");
+    expect(output).not.toContain("hunter2");
+    expect(output).not.toContain("s3cret");
   });
 });
 
 const BACKGROUND = () => withAgentPrefs({ execMode: "background" });
 
 describe("exec in the foreground (default)", () => {
+  test("echoes the agent's own command verbatim; output skips command-line rules", async () => {
+    const { gateway } = createHarness({
+      waitForCommandCompletion: async () => ({
+        command: null,
+        exitCode: 0,
+        output: "Linux web 6.1 -abc\nAPI_TOKEN=xyz789",
+        truncated: false
+      })
+    });
+
+    const result = await gateway.execCommand(CLIENT, {
+      target: "sess-full",
+      command: "mysql -phunter2 -e 'select 1'"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toMatchObject({
+      command: "mysql -phunter2 -e 'select 1'",
+      output: `Linux web 6.1 -abc\nAPI_TOKEN=«redacted»`
+    });
+  });
+
   test("focuses the tab, types the command with the badge held, and returns the OSC 133 result", async () => {
     const writes: string[] = [];
     const focused: string[] = [];
