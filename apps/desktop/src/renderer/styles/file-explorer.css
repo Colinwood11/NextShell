@@ -233,10 +233,6 @@
   background: transparent;
 }
 
-.fe-table-wrap .ant-table-tbody-virtual-scrollbar-vertical {
-  visibility: visible !important;
-}
-
 .fe-table-wrap .ant-table-tbody-virtual-scrollbar-thumb {
   background: var(--border-mid);
 }
